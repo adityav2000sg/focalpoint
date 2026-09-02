@@ -1,6 +1,7 @@
 import type { User } from "@supabase/supabase-js";
 import { isFinanceData, type FinanceData, type SpaceId } from "@/lib/finance";
 import { getAuthenticatedUser } from "@/lib/supabase/server";
+import { needsTogetherSpace } from "@/lib/together";
 
 type SpaceRow = {
   id: string;
@@ -109,7 +110,7 @@ async function createSpace(supabase: SupabaseClient, user: User, type: SpaceId, 
 async function ensureSpaces(supabase: SupabaseClient, user: User, data: FinanceData) {
   let { personal, household } = await findSpaces(supabase, user);
   if (!personal) personal = await createSpace(supabase, user, "personal", data);
-  if (!household) {
+  if (!household && needsTogetherSpace(data)) {
     const owned = await supabase.from("finance_spaces").select("id,type,owner_user_id,data_json,updated_at").eq("type", "household").eq("owner_user_id", user.id).maybeSingle();
     if (owned.error) throw owned.error;
     household = (owned.data as SpaceRow | null) || await createSpace(supabase, user, "household", data);
@@ -157,14 +158,14 @@ export async function POST(request: Request) {
 
     await ensureProfile(supabase, user);
     const { personal, household } = await ensureSpaces(supabase, user, data);
-    const [personalUpdate, householdUpdate] = await Promise.all([
-      supabase.from("finance_spaces").update({ data_json: splitSpace(data, "personal") }).eq("id", personal.id),
-      supabase.from("finance_spaces").update({ data_json: splitSpace(data, "household") }).eq("id", household.id),
-    ]);
+    const personalUpdate = await supabase.from("finance_spaces").update({ data_json: splitSpace(data, "personal") }).eq("id", personal.id);
     if (personalUpdate.error) throw personalUpdate.error;
-    if (householdUpdate.error) throw householdUpdate.error;
+    if (household) {
+      const householdUpdate = await supabase.from("finance_spaces").update({ data_json: splitSpace(data, "household") }).eq("id", household.id);
+      if (householdUpdate.error) throw householdUpdate.error;
+    }
 
-    if (household.owner_user_id === user.id) {
+    if (household?.owner_user_id === user.id) {
       const inviteEmail = data.profile.partnerEmail?.trim().toLowerCase();
       let pendingCleanup = supabase.from("finance_space_members").delete().eq("space_id", household.id).eq("status", "pending");
       if (inviteEmail) pendingCleanup = pendingCleanup.neq("email", inviteEmail);
@@ -181,7 +182,7 @@ export async function POST(request: Request) {
       }
     }
 
-    return Response.json({ ok: true, members: await listMembers(supabase, household.id) });
+    return Response.json({ ok: true, members: await listMembers(supabase, household?.id) });
   } catch (error) {
     return apiError(error instanceof Error ? error.message : "Finance workspace could not be saved");
   }

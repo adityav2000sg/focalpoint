@@ -26,6 +26,7 @@ import {
   Leaf,
   List,
   LogOut,
+  Mail,
   Menu,
   MessageCircle,
   Mic,
@@ -76,27 +77,26 @@ import {
   uid,
 } from "@/lib/finance";
 import { ImportReport, describeImport, importTransactions } from "@/lib/import";
+import { hasTogetherAccess, type TogetherMember } from "@/lib/together";
 
-type ViewId = "today" | "money" | "future" | "coach" | "household";
+type ViewId = "today" | "money" | "future" | "coach" | "together";
 type MoneySection = "snapshot" | "activity" | "accounts" | "inbox" | "plan";
 type ModalId = "capture" | "transaction" | "account" | "goal" | "event" | "recurring" | "import" | "household" | null;
 type ActivityMode = "feed" | "ledger";
 type ActivityFilter = "all" | TransactionType;
 type ActivityPeriod = "month" | "all";
 
-const navItems: { id: ViewId; label: string; icon: React.ElementType }[] = [
+const baseNavItems: { id: ViewId; label: string; icon: React.ElementType }[] = [
   { id: "today", label: "Today", icon: LayoutDashboard },
   { id: "money", label: "Money", icon: WalletCards },
   { id: "future", label: "Future", icon: Target },
   { id: "coach", label: "Coach", icon: WandSparkles },
-  { id: "household", label: "Household", icon: Users },
 ];
 
-const scopeOptions: { id: ViewScope; label: string; shortLabel: string; icon: React.ElementType }[] = [
-  { id: "personal", label: "Personal", shortLabel: "Me", icon: UserRound },
-  { id: "household", label: "Household", shortLabel: "Us", icon: Users },
-  { id: "all", label: "Together", shortLabel: "All", icon: Layers3 },
-];
+const personalScopeOption: { id: ViewScope; label: string; shortLabel: string; icon: React.ElementType } =
+  { id: "personal", label: "Personal", shortLabel: "Me", icon: UserRound };
+const togetherScopeOption: { id: ViewScope; label: string; shortLabel: string; icon: React.ElementType } =
+  { id: "all", label: "Together", shortLabel: "Us", icon: Layers3 };
 
 const accountAccents = ["mint", "sky", "coral", "violet", "lime", "gold"];
 
@@ -121,12 +121,12 @@ function createViewerSeed(viewer: Viewer) {
   const emailName = viewer.email.split("@")[0];
   const displayName = viewer.displayName === viewer.email ? emailName : viewer.displayName;
   const firstName = displayName.split(/\s+/)[0] || "You";
-  return createEmptyFinanceData({ name: displayName, householdName: `${firstName}’s household` });
+  return createEmptyFinanceData({ name: displayName, householdName: `${firstName}’s Together` });
 }
 
 export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Viewer; signOutPath: string }) {
   const [data, setData] = useState<FinanceData>(() => createViewerSeed(viewer));
-  const [scope, setScope] = useState<ViewScope>("all");
+  const [scope, setScope] = useState<ViewScope>("personal");
   const [activeView, setActiveView] = useState<ViewId>("today");
   const [moneySection, setMoneySection] = useState<MoneySection>("snapshot");
   const [modal, setModal] = useState<ModalId>(null);
@@ -149,10 +149,13 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   const [afterAccount, setAfterAccount] = useState<"transaction" | "import" | "recurring" | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [syncStatus, setSyncStatus] = useState<"loading" | "saving" | "saved" | "offline">("loading");
-  const [householdMembers, setHouseholdMembers] = useState<Array<{ email: string; display_name: string; role: string; status: string }>>([]);
+  const [householdMembers, setHouseholdMembers] = useState<TogetherMember[]>([]);
   const [qwenConfigured, setQwenConfigured] = useState(false);
   const loaded = useRef(false);
   const storageKey = `lifetimeFinanceDataV3:${viewer.userId}`;
+  const hasTogether = hasTogetherAccess(data.profile, householdMembers, viewer.email);
+  const navItems = hasTogether ? [...baseNavItems, { id: "together" as const, label: "Together", icon: Users }] : baseNavItems;
+  const scopeOptions = hasTogether ? [personalScopeOption, togetherScopeOption] : [personalScopeOption];
 
   useEffect(() => {
     let cancelled = false;
@@ -213,6 +216,12 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     return () => window.clearTimeout(timer);
   }, [toast]);
 
+  useEffect(() => {
+    if (hasTogether) return;
+    if (scope !== "personal") setScope("personal");
+    if (activeView === "together") setActiveView("today");
+  }, [activeView, hasTogether, scope]);
+
   const scopedAccounts = useMemo(() => inScope(data.accounts, scope), [data.accounts, scope]);
   const scopedTransactions = useMemo(() => {
     if (scope === "all") return [...data.transactions].sort((a, b) => b.date.localeCompare(a.date));
@@ -269,7 +278,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     });
   }, [scopedTransactions, search, selectedMonth, activityFilter, activityPeriod]);
 
-  const currentScope = scopeOptions.find((option) => option.id === scope) || scopeOptions[2];
+  const currentScope = scopeOptions.find((option) => option.id === scope) || personalScopeOption;
   const selectedMonthLabel = new Date(`${selectedMonth}-01T12:00:00`).toLocaleDateString("en-SG", { month: "long", year: "numeric" });
 
   function notify(message: string) {
@@ -277,14 +286,6 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   }
 
   function openNewTransaction(type?: TransactionType) {
-    if (!data.accounts.length) {
-      setEditingAccount(null);
-      setCaptureDraft(type ? { type } : null);
-      setAfterAccount("transaction");
-      setModal("account");
-      notify("Add an account before recording transactions.");
-      return;
-    }
     setEditingTransaction(null);
     setCaptureDraft(type ? { type } : null);
     if (type) setActivityFilter(type);
@@ -292,14 +293,6 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   }
 
   function openCaptureDraft(draft: Partial<Transaction>) {
-    if (!data.accounts.length) {
-      setCaptureDraft(draft);
-      setEditingAccount(null);
-      setAfterAccount("transaction");
-      setModal("account");
-      notify("Add an account, then you can finish this transaction.");
-      return;
-    }
     setEditingTransaction(null);
     setCaptureDraft(draft);
     setModal("transaction");
@@ -362,6 +355,12 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     setModal("account");
   }
 
+  function openRequiredAccount(returnTo: "transaction" | "import" | "recurring") {
+    setEditingAccount(null);
+    setAfterAccount(returnTo);
+    setModal("account");
+  }
+
   function saveAccount(account: Account) {
     setData((current) => ({
       ...current,
@@ -405,10 +404,32 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     });
   }
 
-  function saveHousehold(profile: FinanceData["profile"]) {
-    setData((current) => ({ ...current, profile }));
+  async function saveHousehold(profile: FinanceData["profile"], prepareEmail = false) {
+    const nextData = { ...data, profile };
+    setData(nextData);
+    setScope("all");
     setModal(null);
-    notify("Household setup updated.");
+    if (prepareEmail && profile.partnerEmail) {
+      setSyncStatus("saving");
+      try {
+        const response = await fetch("/api/finance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(nextData) });
+        if (!response.ok) throw new Error("invite save failed");
+        const payload = await response.json() as { members?: typeof householdMembers };
+        if (payload.members) setHouseholdMembers(payload.members);
+        setSyncStatus("saved");
+      } catch {
+        setSyncStatus("offline");
+        notify("The invite is saved on this device, but cloud sync failed. Reconnect before sending it.");
+        return;
+      }
+      const loginUrl = `${window.location.origin}/login`;
+      const subject = `Join ${profile.householdName} on Lifetime`;
+      const body = `${profile.name} invited you to share a Together space on Lifetime.\n\nSign in with ${profile.partnerEmail} here:\n${loginUrl}\n\nOnly finances deliberately marked “Shared in Together” are visible to both people. Your Personal space remains private.`;
+      window.location.href = `mailto:${encodeURIComponent(profile.partnerEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+      notify("Invite saved. Your email app has a ready-to-send message.");
+      return;
+    }
+    notify("Together setup saved. They can join by signing in with the invited Google email.");
   }
 
   function shiftSelectedMonth(offset: number) {
@@ -426,13 +447,6 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   }
 
   function openImport() {
-    if (!data.accounts.length) {
-      setEditingAccount(null);
-      setAfterAccount("import");
-      setModal("account");
-      notify("Add an account before importing transactions.");
-      return;
-    }
     setModal("import");
   }
 
@@ -499,13 +513,6 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   }
 
   function openNewRecurring() {
-    if (!data.accounts.length) {
-      setEditingAccount(null);
-      setAfterAccount("recurring");
-      setModal("account");
-      notify("Add the account that will pay this recurring item first.");
-      return;
-    }
     setEditingRecurring(null);
     setModal("recurring");
   }
@@ -620,10 +627,17 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   }
 
   function clearWorkspace() {
-    setConfirmation({ title: "Clear the whole workspace?", copy: "Every account, transaction, goal, recurring payment, plan, and inbox item will be removed. Your profile and household setup will remain.", actionLabel: "Clear workspace", onConfirm: () => {
+    setConfirmation({ title: "Clear the whole workspace?", copy: "Every account, transaction, goal, recurring payment, plan, and inbox item will be removed. Your profile and Together setup will remain.", actionLabel: "Clear workspace", onConfirm: () => {
       setData((current) => ({ ...createViewerSeed(viewer), profile: current.profile, accounts: [], transactions: [], goals: [], recurring: [], spendingPlans: [], plannedEvents: [], inbox: [] }));
       setScope("all"); setActiveView("today"); notify("Workspace cleared. Add your first account when you’re ready.");
     } });
+  }
+
+  function navigateTo(view: ViewId, section?: MoneySection) {
+    if (section) setMoneySection(section);
+    if (view === "together") setScope("all");
+    setActiveView(view);
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   if (!hydrated) return <AppLoading displayName={viewer.displayName} />;
@@ -647,7 +661,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               <button
                 key={item.id}
                 className={activeView === item.id ? "nav-item nav-active" : "nav-item"}
-                onClick={() => { setActiveView(item.id); setMobileMenu(false); }}
+                onClick={() => { navigateTo(item.id); setMobileMenu(false); }}
               >
                 <Icon size={19} />
                 <span>{item.label}</span>
@@ -661,8 +675,8 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
         <div className="foundation-card">
           <div className="foundation-icon"><Sparkles size={18} /></div>
           <p className="eyebrow">Monthly signal</p>
-          <strong>{savingsRate.toFixed(0)}% savings rate</strong>
-          <span>You kept {formatMoney(monthCashFlow)} this month.</span>
+          <strong>{monthTransactions.length ? `${savingsRate.toFixed(0)}% savings rate` : "No signal yet"}</strong>
+          <span>{monthTransactions.length ? `You kept ${formatMoney(monthCashFlow)} this month.` : "Add income and spending to build a monthly signal."}</span>
           <div className="mini-progress"><i style={{ width: `${Math.min(savingsRate, 100)}%` }} /></div>
         </div>
 
@@ -670,7 +684,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
           <span className="avatar">{data.profile.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span>
           <div><strong>{data.profile.name}</strong><small>{viewer.email}</small></div>
           <div className="profile-actions">
-            <button className="signout-button" onClick={() => { setModal("household"); setMobileMenu(false); }} aria-label="Household settings" title="Household settings"><Settings2 size={17} /></button>
+            <button className="signout-button" onClick={() => { setModal("household"); setMobileMenu(false); }} aria-label="Together settings" title="Together settings"><Settings2 size={17} /></button>
             <form action={signOutPath} method="post"><button className="signout-button" type="submit" aria-label="Sign out" title="Sign out"><LogOut size={17} /></button></form>
           </div>
         </div>
@@ -690,7 +704,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
                 <button
                   key={option.id}
                   className={scope === option.id ? "scope-option scope-active" : "scope-option"}
-                  onClick={() => { setScope(option.id); if (option.id === "household" && !data.profile.householdStartedAt) setModal("household"); }}
+                  onClick={() => setScope(option.id)}
                   aria-pressed={scope === option.id}
                 >
                   <Icon size={15} />
@@ -732,7 +746,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               recurring={scopedRecurring}
               categoryTotals={categoryTotals}
               onAdd={() => openNewTransaction()}
-              onView={(view) => setActiveView(view)}
+              onView={navigateTo}
               onMetric={openActivity}
               goalContribution={goalContribution}
               setGoalContribution={setGoalContribution}
@@ -817,18 +831,18 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
             <CoachView data={data} scope={scope} forecast={forecast} categoryTotals={categoryTotals} qwenConfigured={qwenConfigured} onCapture={() => setModal("capture")} />
           )}
 
-          {activeView === "household" && (
-            <HouseholdView data={data} accounts={scopedAccounts} members={householdMembers} viewerEmail={viewer.email} onSetup={() => setModal("household")} onEditAccount={openEditAccount} />
+          {activeView === "together" && hasTogether && (
+            <TogetherView data={data} accounts={scopedAccounts} members={householdMembers} viewerEmail={viewer.email} onSetup={() => setModal("household")} onEditAccount={openEditAccount} />
           )}
           </div>
         </main>
       </div>
 
-      <nav className="mobile-nav" aria-label="Mobile navigation">
+      <nav className="mobile-nav" aria-label="Mobile navigation" style={{ gridTemplateColumns: `repeat(${navItems.length}, minmax(0, 1fr))` }}>
         {navItems.map((item) => {
           const Icon = item.icon;
           return (
-            <button key={item.id} className={activeView === item.id ? "mobile-nav-active" : ""} onClick={() => setActiveView(item.id)}>
+            <button key={item.id} className={activeView === item.id ? "mobile-nav-active" : ""} onClick={() => navigateTo(item.id)}>
               <Icon size={20} /><span>{item.label}</span>
             </button>
           );
@@ -838,13 +852,13 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
       <button className="mobile-fab voice-fab" onClick={() => setModal("capture")} aria-label="Capture with voice or text"><Mic size={24} /></button>
 
       {modal === "capture" && <CaptureModal accounts={data.accounts} profile={data.profile} scope={scope} qwenConfigured={qwenConfigured} onClose={() => setModal(null)} onTransaction={(draft) => openCaptureDraft(draft)} onPlan={(event) => savePlannedEvent(event)} onAsk={(prompt) => { setModal(null); setActiveView("coach"); window.setTimeout(() => window.dispatchEvent(new CustomEvent("lifetime-coach-question", { detail: prompt })), 100); }} onProfile={(profile) => setData((current) => ({ ...current, profile }))} />}
-      {modal === "transaction" && <TransactionModal initial={editingTransaction || captureDraft} accounts={data.accounts} scope={scope} onClose={() => { setModal(null); setEditingTransaction(null); setCaptureDraft(null); }} onSubmit={saveTransaction} />}
-      {modal === "account" && <AccountModal initial={editingAccount} scope={scope} profileName={data.profile.name} partnerName={data.profile.partnerName} onClose={() => { setModal(null); setEditingAccount(null); setAfterAccount(null); setCaptureDraft(null); }} onSubmit={saveAccount} onDelete={editingAccount ? () => deleteAccount(editingAccount) : undefined} />}
-      {modal === "goal" && <GoalModal initial={editingGoal} scope={scope} onClose={() => { setModal(null); setEditingGoal(null); }} onSubmit={saveGoal} onDelete={editingGoal ? () => deleteGoal(editingGoal) : undefined} />}
-      {modal === "event" && <PlannedEventModal initial={editingEvent} scope={scope} onClose={() => { setModal(null); setEditingEvent(null); }} onSubmit={savePlannedEvent} onDelete={editingEvent ? () => deletePlannedEvent(editingEvent) : undefined} />}
-      {modal === "recurring" && <RecurringModal initial={editingRecurring} scope={scope} accounts={data.accounts} onClose={() => { setModal(null); setEditingRecurring(null); }} onSubmit={saveRecurring} onDelete={editingRecurring ? () => deleteRecurring(editingRecurring) : undefined} />}
-      {modal === "import" && <ImportModal data={data} scope={scope} onClose={() => setModal(null)} setData={setData} onStage={stageInbox} notify={notify} />}
-      {modal === "household" && <HouseholdModal profile={data.profile} viewerEmail={viewer.email} onClose={() => setModal(null)} onSubmit={saveHousehold} />}
+      {modal === "transaction" && <TransactionModal initial={editingTransaction || captureDraft} accounts={data.accounts} scope={scope} onNeedAccount={() => openRequiredAccount("transaction")} onClose={() => { setModal(null); setEditingTransaction(null); setCaptureDraft(null); }} onSubmit={saveTransaction} />}
+      {modal === "account" && <AccountModal initial={editingAccount} scope={scope} canShare={hasTogether} profileName={data.profile.name} partnerName={data.profile.partnerName} onClose={() => { setModal(null); setEditingAccount(null); setAfterAccount(null); setCaptureDraft(null); }} onSubmit={saveAccount} onDelete={editingAccount ? () => deleteAccount(editingAccount) : undefined} />}
+      {modal === "goal" && <GoalModal initial={editingGoal} scope={scope} canShare={hasTogether} onClose={() => { setModal(null); setEditingGoal(null); }} onSubmit={saveGoal} onDelete={editingGoal ? () => deleteGoal(editingGoal) : undefined} />}
+      {modal === "event" && <PlannedEventModal initial={editingEvent} scope={scope} canShare={hasTogether} onClose={() => { setModal(null); setEditingEvent(null); }} onSubmit={savePlannedEvent} onDelete={editingEvent ? () => deletePlannedEvent(editingEvent) : undefined} />}
+      {modal === "recurring" && <RecurringModal initial={editingRecurring} scope={scope} accounts={data.accounts} onNeedAccount={() => openRequiredAccount("recurring")} onClose={() => { setModal(null); setEditingRecurring(null); }} onSubmit={saveRecurring} onDelete={editingRecurring ? () => deleteRecurring(editingRecurring) : undefined} />}
+      {modal === "import" && <ImportModal data={data} scope={scope} onNeedAccount={() => openRequiredAccount("import")} onClose={() => setModal(null)} setData={setData} onStage={stageInbox} notify={notify} />}
+      {modal === "household" && <HouseholdModal profile={data.profile} members={householdMembers} viewerEmail={viewer.email} onClose={() => setModal(null)} onSubmit={saveHousehold} />}
 
       {confirmation && <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} onConfirm={() => { const action = confirmation.onConfirm; setConfirmation(null); action(); }} />}
 
@@ -859,7 +873,7 @@ function AppLoading({ displayName }: { displayName: string }) {
       <div className="loading-mark"><Leaf size={27} /><i /><i /></div>
       <p className="eyebrow">Lifetime</p>
       <strong>Opening {displayName.split(/\s+/)[0] || "your"}’s private workspace</strong>
-      <span>Syncing personal and household finances…</span>
+      <span>Syncing your Personal and Together spaces…</span>
     </main>
   );
 }
@@ -867,7 +881,7 @@ function AppLoading({ displayName }: { displayName: string }) {
 function FirstRunGuide({ onAddAccount, onHousehold, onCapture }: { onAddAccount: () => void; onHousehold: () => void; onCapture: () => void }) {
   const steps = [
     { number: "01", title: "Add where money lives", copy: "Start with one bank account, card, cash balance, investment, CPF account, or loan.", action: "Add first account", icon: <WalletCards size={19} />, onClick: onAddAccount },
-    { number: "02", title: "Choose what is shared", copy: "Set up a partner or household without exposing either person’s private accounts.", action: "Set up household", icon: <Users size={19} />, onClick: onHousehold },
+    { number: "02", title: "Invite someone when ready", copy: "Create Together only when a partner or family member is invited. Your Personal space stays separate.", action: "Set up Together", icon: <Users size={19} />, onClick: onHousehold },
     { number: "03", title: "Capture naturally", copy: "Speak or type a transaction, then review it before it changes any balance.", action: "Try capture", icon: <Mic size={19} />, onClick: onCapture },
   ];
   return (
@@ -929,7 +943,7 @@ function Overview({
   recurring: RecurringItem[];
   categoryTotals: [string, number][];
   onAdd: () => void;
-  onView: (view: ViewId) => void;
+  onView: (view: ViewId, section?: MoneySection) => void;
   onMetric: (filter: ActivityFilter, mode?: ActivityMode) => void;
   goalContribution: string | null;
   setGoalContribution: (id: string | null) => void;
@@ -945,8 +959,9 @@ function Overview({
 }) {
   const today = new Date();
   const firstName = profileName.split(" ")[0];
-  const scopeCopy = scope === "all" ? "your whole financial life" : scope === "household" ? "the life you’re building together" : "your personal foundation";
+  const scopeCopy = scope === "all" ? "the money you manage alone and together" : "your personal foundation";
   const goal = goals[0];
+  const hasEvidence = accounts.length > 0 || transactions.length > 0;
 
   return (
     <div className="page-stack">
@@ -968,7 +983,7 @@ function Overview({
         </div>
         <div className="hero-actions">
           <button className="hero-button" onClick={onCapture}><Mic size={18} /> Tell Lifetime</button>
-          <button className="hero-secondary" onClick={() => onView("money")}>Explore your money <ChevronRight size={17} /></button>
+          <button className="hero-secondary" onClick={() => onView("money", "snapshot")}>Explore your money <ChevronRight size={17} /></button>
         </div>
       </section>
 
@@ -978,8 +993,8 @@ function Overview({
         <div className="coach-glance-icon"><WandSparkles size={21} /></div>
         <div>
           <p className="eyebrow">Lifetime outlook</p>
-          <h2>{forecast.safeToSpend > 0 ? `${formatMoney(forecast.safeToSpend)} is flexible each month.` : "Your current commitments use the monthly surplus."}</h2>
-          <p>You have {forecast.emergencyMonths.toFixed(1)} months of liquid cover. {forecast.goalForecasts.some((item) => !item.onTrack) ? "At least one goal needs a timing or contribution adjustment." : "Your modelled goals are currently on track."}</p>
+          <h2>{!hasEvidence ? "Add real numbers before Lifetime judges your position." : forecast.safeToSpend > 0 ? `${formatMoney(forecast.safeToSpend)} is flexible each month.` : "Your current commitments use the monthly surplus."}</h2>
+          <p>{!hasEvidence ? "There is no financial assessment yet. Start with an account, then add or import activity." : `You have ${forecast.emergencyMonths.toFixed(1)} months of liquid cover. ${forecast.goalForecasts.some((item) => !item.onTrack) ? "At least one goal needs a timing or contribution adjustment." : "Your modelled goals are currently on track."}`}</p>
         </div>
         <button className="secondary-button" onClick={() => onView("coach")}>Ask Coach <ChevronRight size={16} /></button>
       </section>
@@ -1005,14 +1020,14 @@ function Overview({
 
       <div className="dashboard-grid">
         <section className="panel accounts-panel">
-          <PanelHeading eyebrow="Accounts" title="Where your money lives" action="See all" onAction={() => onView("money")} />
+          <PanelHeading eyebrow="Accounts" title="Where your money lives" action="See all" onAction={() => onView("money", "accounts")} />
           <div className="account-list">
             {accounts.length ? accounts.slice(0, 4).map((account) => <AccountRow key={account.id} account={account} />) : <EmptyState icon={<WalletCards />} title="Add your first account" copy="Start with a bank, card, cash, or investment account." />}
           </div>
         </section>
 
         <section className="panel spending-panel">
-          <PanelHeading eyebrow="Spending" title="This month by category" action="Open Money" onAction={() => onView("money")} />
+          <PanelHeading eyebrow="Spending" title="This month by category" action="Open activity" onAction={() => onView("money", "activity")} />
           {categoryTotals.length ? (
             <>
               <div className="category-meter" aria-label="Spending category breakdown">
@@ -1030,7 +1045,7 @@ function Overview({
         </section>
 
         <section className="panel activity-panel">
-          <PanelHeading eyebrow="Activity" title="Recent transactions" action="See all" onAction={() => onView("money")} />
+          <PanelHeading eyebrow="Activity" title="Recent transactions" action="See all" onAction={() => onView("money", "activity")} />
           <div className="transaction-list compact-list">
             {transactions.length ? transactions.slice(0, 6).map((transaction) => <TransactionRow key={transaction.id} transaction={transaction} accounts={data.accounts} />) : <EmptyState icon={<ArrowLeftRight />} title="No activity yet" copy="Transactions you add or import will appear here." />}
           </div>
@@ -1147,7 +1162,7 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
             <SpendingPlanList plans={plans} transactions={monthTransactions} compact onSave={onSavePlan} scope={scope} />
           </section>
         </div>
-        <section className="data-controls"><div><p className="eyebrow">Your data</p><strong>Back up, restore, or start over.</strong><span>Restore replaces this workspace from a Lifetime JSON backup. Clearing preserves your profile and household setup.</span></div><div><button className="secondary-button" onClick={onExport}><Download size={16} /> Download backup</button><label className="secondary-button file-button"><Upload size={16} /> Restore backup<input className="file-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) onRestore(file); event.target.value = ""; }} /></label><button className="secondary-button danger-button" onClick={onReset}><Trash2 size={16} /> Clear workspace</button></div></section>
+        <section className="data-controls"><div><p className="eyebrow">Your data</p><strong>Back up, restore, or start over.</strong><span>Restore replaces this workspace from a Lifetime JSON backup. Clearing preserves your profile and Together setup.</span></div><div><button className="secondary-button" onClick={onExport}><Download size={16} /> Download backup</button><label className="secondary-button file-button"><Upload size={16} /> Restore backup<input className="file-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) onRestore(file); event.target.value = ""; }} /></label><button className="secondary-button danger-button" onClick={onReset}><Trash2 size={16} /> Clear workspace</button></div></section>
       </>}
 
       {section === "activity" && <ActivityView transactions={transactions} accounts={allAccounts} search={search} setSearch={setSearch} onAdd={onAdd} onImport={onImport} onDelete={onDelete} onEdit={onEditTransaction} selectedMonthLabel={selectedMonthLabel} selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} shiftMonth={shiftMonth} mode={mode} setMode={setMode} filter={filter} setFilter={setFilter} period={period} setPeriod={setPeriod} />}
@@ -1199,7 +1214,7 @@ function SpendingPlanList({ plans, transactions, compact = false, onSave, scope 
 }
 
 function AddSpendingPlan({ plans, scope, onSave }: { plans: FinanceData["spendingPlans"]; scope: ViewScope; onSave: (category: string, amount: number, scope: SpaceId) => void }) {
-  const planSpace: SpaceId = scope === "household" ? "household" : "personal";
+  const planSpace: SpaceId = scope === "all" ? "household" : "personal";
   const available = expenseCategories.filter((category) => !plans.some((plan) => plan.category === category && plan.space === planSpace));
   const [category, setCategory] = useState(available[0] || "");
   const [amount, setAmount] = useState("");
@@ -1235,8 +1250,9 @@ function FutureView({ goals, recurring, events, accounts, forecast, recurringCos
   goals: Goal[]; recurring: RecurringItem[]; events: PlannedEvent[]; accounts: Account[]; forecast: FinanceForecast; recurringCost: number; onAddGoal: () => void; onAddEvent: () => void; onAddRecurring: () => void; onToggleRecurring: (id: string) => void; onEditGoal: (goal: Goal) => void; onEditEvent: (event: PlannedEvent) => void; onEditRecurring: (item: RecurringItem) => void; goalContribution: string | null; setGoalContribution: (id: string | null) => void; contributionAmount: string; setContributionAmount: (value: string) => void; fundGoal: (id: string) => void; onToggleEvent: (id: string) => void;
 }) {
   const plannedTotal = events.filter((item) => item.includeInPlan).reduce((sum, item) => sum + item.amount, 0);
+  const hasForecastEvidence = forecast.historyMonths > 0;
   return <div className="page-stack"><PageHeading eyebrow="From today to someday" title="Future" copy="Goals, life plans and scenarios share one model, so every choice reveals its trade-off."><button className="secondary-button" onClick={onAddEvent}><CalendarDays size={17} /> Plan an event</button><button className="primary-button" onClick={onAddGoal}><Target size={17} /> New goal</button></PageHeading>
-    <section className="future-hero"><div><p className="eyebrow hero-eyebrow">Forecast runway</p><h2>{formatMoney(Math.abs(forecast.monthlySurplus))} monthly {forecast.monthlySurplus < 0 ? "deficit" : "surplus"}</h2><p>Based on {forecast.historyMonths} month{forecast.historyMonths === 1 ? "" : "s"} of activity · {forecast.confidence} confidence</p></div><div className="future-stat"><span>Safe to spend</span><strong>{formatMoney(forecast.safeToSpend)}</strong><small>after goal contributions</small></div><div className="future-stat"><span>Emergency cover</span><strong>{forecast.emergencyMonths.toFixed(1)} months</strong><small>{formatMoney(forecast.liquidBalance)} liquid</small></div></section>
+    <section className="future-hero"><div><p className="eyebrow hero-eyebrow">Forecast runway</p><h2>{hasForecastEvidence ? `${formatMoney(Math.abs(forecast.monthlySurplus))} monthly ${forecast.monthlySurplus < 0 ? "deficit" : "surplus"}` : "Waiting for real activity"}</h2><p>{hasForecastEvidence ? `Based on ${forecast.historyMonths} month${forecast.historyMonths === 1 ? "" : "s"} of activity · ${forecast.confidence} confidence` : "Add an account and transactions before relying on a forecast."}</p></div><div className="future-stat"><span>Safe to spend</span><strong>{hasForecastEvidence ? formatMoney(forecast.safeToSpend) : "Not available"}</strong><small>{hasForecastEvidence ? "after goal contributions" : "needs income and spending"}</small></div><div className="future-stat"><span>Emergency cover</span><strong>{hasForecastEvidence ? `${forecast.emergencyMonths.toFixed(1)} months` : "Not available"}</strong><small>{hasForecastEvidence ? `${formatMoney(forecast.liquidBalance)} liquid` : "needs a liquid balance"}</small></div></section>
     <section className="goal-runway-grid">{goals.map((goal) => { const model = forecast.goalForecasts.find((item) => item.goalId === goal.id); return <button className="runway-card" key={goal.id} onClick={() => onEditGoal(goal)}><div className="runway-top"><span className={`goal-symbol goal-${goal.icon}`}><Target size={18} /></span><span className={model?.onTrack ? "status-on-track" : "status-watch"}>{model?.onTrack ? "On track" : "Needs attention"}</span></div><h3>{goal.name}</h3><strong>{model?.estimatedDate ? new Date(`${model.estimatedDate}T12:00:00`).toLocaleDateString("en-SG", { month: "long", year: "numeric" }) : "No forecast yet"}</strong><p>{model?.plannedEventDelayMonths ? `Planned events add about ${model.plannedEventDelayMonths} months.` : "No planned event delay modelled."}</p><div className="goal-progress"><i style={{ width: `${Math.min(100, (goal.current / goal.target) * 100)}%` }} /></div><small>{formatMoney(goal.current)} of {formatMoney(goal.target)} · tap to edit</small></button>; })}{!goals.length && <EmptyState icon={<Target />} title="Give the future a number" copy="Create a goal and Lifetime will estimate when you can reach it." />}</section>
     <div className="dashboard-grid"><section className="panel scenario-panel"><PanelHeading eyebrow="Scenario lab" title="What your plans change" action="Add event" onAction={onAddEvent} /><div className="scenario-summary"><span>Included life plans</span><strong>{formatMoney(plannedTotal)}</strong><small>Turn an event off to compare the forecast without it.</small></div><div className="event-list">{events.map((event) => <div className={event.includeInPlan ? "event-row" : "event-row event-muted"} key={event.id}><span className="event-date"><strong>{new Date(`${event.date}T12:00:00`).toLocaleDateString("en-SG", { month: "short" })}</strong><small>{new Date(`${event.date}T12:00:00`).getFullYear()}</small></span><button className="event-copy" onClick={() => onEditEvent(event)}><strong>{event.name}</strong><small>{event.kind} · tap to edit</small></button><strong>{formatMoney(event.amount)}</strong><button className={event.includeInPlan ? "tiny-toggle tiny-toggle-on" : "tiny-toggle"} onClick={() => onToggleEvent(event.id)} aria-label={`${event.includeInPlan ? "Exclude" : "Include"} ${event.name} in forecast`}><i /></button></div>)}{!events.length && <EmptyState icon={<CalendarDays />} title="No life plans yet" copy="Add a trip, move, car, education, or family event to model the trade-off." />}</div></section><section className="panel forecast-explain"><span className="coach-glance-icon"><WandSparkles size={21} /></span><p className="eyebrow">Scenario signal</p><h3>{plannedTotal ? `${formatMoney(plannedTotal)} of plans are competing with your goals.` : "No planned events are competing with your goals."}</h3><p>{forecast.goalForecasts.some((item) => item.plannedEventDelayMonths > 0) ? `The largest modelled delay is ${Math.max(...forecast.goalForecasts.map((item) => item.plannedEventDelayMonths))} months. Lifetime recalculates this when spending or contributions change.` : "Your forecast currently has no event-driven delays."}</p><small>Forecasts are estimates, not guarantees. Evidence: transaction averages, current balances, goal contributions and included events.</small></section></div>
     <PlansView goals={goals} recurring={recurring} accounts={accounts} recurringCost={recurringCost} onAddGoal={onAddGoal} onAddRecurring={onAddRecurring} onToggleRecurring={onToggleRecurring} onEditGoal={onEditGoal} onEditRecurring={onEditRecurring} goalContribution={goalContribution} setGoalContribution={setGoalContribution} contributionAmount={contributionAmount} setContributionAmount={setContributionAmount} fundGoal={fundGoal} />
@@ -1248,6 +1264,7 @@ function CoachView({ data, scope, forecast, categoryTotals, qwenConfigured, onCa
   const [messages, setMessages] = useState<Array<{ role: "user" | "coach"; text: string }>>([]);
   const [thinking, setThinking] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const hasEvidence = forecast.historyMonths > 0;
   useEffect(() => {
     const listener = (event: Event) => { const value = (event as CustomEvent<string>).detail; if (value) { setPrompt(value); window.setTimeout(() => document.getElementById("coach-submit")?.click(), 20); } };
     window.addEventListener("lifetime-coach-question", listener);
@@ -1255,6 +1272,7 @@ function CoachView({ data, scope, forecast, categoryTotals, qwenConfigured, onCa
   }, []);
   useEffect(() => { scrollRef.current?.scrollTo({ top: scrollRef.current.scrollHeight, behavior: "smooth" }); }, [messages, thinking]);
   function localCoach(question: string) {
+    if (!hasEvidence) return "I don’t have enough real financial data to assess your position yet. Add an account, then log or import income and spending. Once there is activity, I can explain cash flow, resilience, and goal trade-offs without inventing a signal.";
     const lower = question.toLowerCase();
     if (lower.includes("emergency") || lower.includes("safe")) return `You have about ${forecast.emergencyMonths.toFixed(1)} months of liquid cover. After current goal contributions, the model leaves ${formatMoney(forecast.safeToSpend)} flexible each month. I’d protect the emergency buffer before raising discretionary plans.`;
     if (lower.includes("goal") || lower.includes("afford") || lower.includes("trip")) { const delayed = Math.max(0, ...forecast.goalForecasts.map((item) => item.plannedEventDelayMonths)); return delayed ? `Your included life plans could push the most affected goal back by about ${delayed} months. That estimate uses the plan costs divided by the goal’s current monthly contribution; change either input and it recalculates.` : "Your current goal model does not show an event-driven delay. Add a future event with a cost to compare the trade-off."; }
@@ -1274,20 +1292,20 @@ function CoachView({ data, scope, forecast, categoryTotals, qwenConfigured, onCa
     }
     setMessages((current) => [...current, { role: "coach", text: answer }]); setThinking(false);
   }
-  return <div className="page-stack"><PageHeading eyebrow="Evidence, explained" title="Coach" copy="A financial co-pilot that reasons from your numbers, shows assumptions and never moves money for you."><span className={qwenConfigured ? "ai-status ai-online" : "ai-status"}><i />{qwenConfigured ? "Qwen Flash connected" : "Planning engine active"}</span><button className="primary-button" onClick={onCapture}><Mic size={17} /> Ask by voice</button></PageHeading>
-    <section className="coach-brief"><div className="coach-avatar"><WandSparkles size={24} /></div><div><p className="eyebrow">Your brief today</p><h2>{forecast.goalForecasts.some((item) => !item.onTrack) ? "One plan deserves a closer look." : "Your foundation is holding."}</h2><p>{forecast.emergencyMonths >= 6 ? "Your liquid buffer is above six months of modelled spending." : `Your liquid buffer covers ${forecast.emergencyMonths.toFixed(1)} months of modelled spending.`} {forecast.safeToSpend > 0 ? `${formatMoney(forecast.safeToSpend)} remains flexible after goal contributions.` : "There is no unallocated surplus in the current model."}</p><span>Confidence: {forecast.confidence} · {forecast.historyMonths} months of ledger evidence</span></div></section>
-    <div className="coach-layout"><section className="panel coach-chat"><div className="coach-thread" ref={scrollRef}>{!messages.length && <div className="coach-starters"><p>Try asking</p>{["Can I afford my planned trip?", "How strong is my emergency fund?", "What is slowing down my goals?"].map((item) => <button key={item} onClick={() => ask(item)}>{item}<ChevronRight size={15} /></button>)}</div>}{messages.map((message, index) => <div key={`${message.role}-${index}`} className={`coach-message coach-message-${message.role}`}>{message.role === "coach" && <span><WandSparkles size={15} /></span>}<p>{message.text}</p></div>)}{thinking && <div className="coach-thinking"><i /><i /><i /></div>}</div><form className="coach-composer" onSubmit={(event) => { event.preventDefault(); ask(); }}><button type="button" onClick={onCapture} aria-label="Ask by voice"><Mic size={19} /></button><input value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Ask about a goal, trade-off, or pattern…" /><button id="coach-submit" className="primary-button" type="submit">Ask</button></form></section><aside className="coach-evidence"><div className="evidence-card"><span><Gauge size={18} /> Monthly model</span><strong>{formatMoney(forecast.averageIncome)} in</strong><p>{formatMoney(forecast.averageSpending)} average spending</p></div><div className="evidence-card"><span><ShieldCheck size={18} /> Resilience</span><strong>{forecast.emergencyMonths.toFixed(1)} months</strong><p>{formatMoney(forecast.liquidBalance)} liquid</p></div><div className="evidence-card"><span><Target size={18} /> Goals</span><strong>{forecast.goalForecasts.filter((item) => item.onTrack).length} on track</strong><p>{forecast.goalForecasts.length} modelled</p></div><p className="evidence-note">Coach explains the deterministic model. It does not calculate balances itself or recommend securities.</p></aside></div>
+  return <div className="page-stack"><PageHeading eyebrow="Evidence, explained" title="Coach" copy="A financial co-pilot that reasons from your numbers, shows assumptions and never moves money for you."><button className="primary-button" onClick={onCapture}><Mic size={17} /> Ask by voice</button></PageHeading>
+    <section className="coach-brief"><div className="coach-avatar"><WandSparkles size={24} /></div><div><p className="eyebrow">Your brief today</p><h2>{!hasEvidence ? "Not enough data to assess your foundation yet." : forecast.goalForecasts.some((item) => !item.onTrack) ? "One plan deserves a closer look." : "Your current numbers look stable."}</h2><p>{!hasEvidence ? "Add an account and at least one real transaction. Until then, Lifetime will not invent a verdict from zeroes." : `${forecast.emergencyMonths >= 6 ? "Your liquid buffer is above six months of modelled spending." : `Your liquid buffer covers ${forecast.emergencyMonths.toFixed(1)} months of modelled spending.`} ${forecast.safeToSpend > 0 ? `${formatMoney(forecast.safeToSpend)} remains flexible after goal contributions.` : "There is no unallocated surplus in the current model."}`}</p><span>{hasEvidence ? `Confidence: ${forecast.confidence} · ${forecast.historyMonths} months of ledger evidence` : "Confidence: unavailable · waiting for real ledger evidence"}</span></div></section>
+    <div className="coach-layout"><section className="panel coach-chat"><div className="coach-thread" ref={scrollRef}>{!messages.length && <div className="coach-starters"><p>Try asking</p>{["Can I afford my planned trip?", "How strong is my emergency fund?", "What is slowing down my goals?"].map((item) => <button key={item} onClick={() => ask(item)}>{item}<ChevronRight size={15} /></button>)}</div>}{messages.map((message, index) => <div key={`${message.role}-${index}`} className={`coach-message coach-message-${message.role}`}>{message.role === "coach" && <span><WandSparkles size={15} /></span>}<p>{message.text}</p></div>)}{thinking && <div className="coach-thinking"><i /><i /><i /></div>}</div><form className="coach-composer" onSubmit={(event) => { event.preventDefault(); ask(); }}><button type="button" onClick={onCapture} aria-label="Ask by voice"><Mic size={19} /></button><input value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Ask about a goal, trade-off, or pattern…" /><button id="coach-submit" className="primary-button" type="submit">Ask</button></form></section><aside className="coach-evidence"><div className="evidence-card"><span><Gauge size={18} /> Monthly model</span><strong>{hasEvidence ? `${formatMoney(forecast.averageIncome)} in` : "Waiting for data"}</strong><p>{hasEvidence ? `${formatMoney(forecast.averageSpending)} average spending` : "No income or spending assessed"}</p></div><div className="evidence-card"><span><ShieldCheck size={18} /> Resilience</span><strong>{hasEvidence ? `${forecast.emergencyMonths.toFixed(1)} months` : "Not assessed"}</strong><p>{hasEvidence ? `${formatMoney(forecast.liquidBalance)} liquid` : "Add balances and activity"}</p></div><div className="evidence-card"><span><Target size={18} /> Goals</span><strong>{forecast.goalForecasts.length ? `${forecast.goalForecasts.filter((item) => item.onTrack).length} on track` : "No goals yet"}</strong><p>{forecast.goalForecasts.length} modelled</p></div><p className="evidence-note">Coach explains the deterministic model. It does not calculate balances itself or recommend securities.</p></aside></div>
   </div>;
 }
 
-function HouseholdView({ data, accounts, members, viewerEmail, onSetup, onEditAccount }: { data: FinanceData; accounts: Account[]; members: Array<{ email: string; display_name: string; role: string; status: string }>; viewerEmail: string; onSetup: () => void; onEditAccount: (account: Account) => void }) {
+function TogetherView({ data, accounts, members, viewerEmail, onSetup, onEditAccount }: { data: FinanceData; accounts: Account[]; members: Array<{ email: string; display_name: string; role: string; status: string }>; viewerEmail: string; onSetup: () => void; onEditAccount: (account: Account) => void }) {
   const sharedAccounts = data.accounts.filter((item) => item.space === "household");
   const personalAccounts = data.accounts.filter((item) => item.space === "personal");
   const visibleMembers = members.length ? members : [{ email: viewerEmail, display_name: data.profile.name, role: "owner", status: "active" }, ...(data.profile.partnerEmail ? [{ email: data.profile.partnerEmail, display_name: data.profile.partnerName, role: "member", status: "pending" }] : [])];
-  return <div className="page-stack"><PageHeading eyebrow="Private by default, shared on purpose" title={data.profile.householdName || "Household"} copy="Personal and shared finances feed one combined view without erasing ownership or duplicating transfers."><button className="primary-button" onClick={onSetup}><Settings2 size={17} /> Manage household</button></PageHeading>
+  return <div className="page-stack"><PageHeading eyebrow="Private by default, shared on purpose" title={data.profile.householdName || "Together"} copy="Together combines your private records with records deliberately shared between members. The other person never receives your Personal records."><button className="primary-button" onClick={onSetup}><Settings2 size={17} /> Manage Together</button></PageHeading>
     <section className="household-hero"><div className="household-orbits"><span className="avatar">{data.profile.name.slice(0, 1)}</span><span className="avatar partner-avatar">{data.profile.partnerName?.slice(0, 1) || "P"}</span></div><div><p className="eyebrow hero-eyebrow">Together, with boundaries</p><h2>{formatMoney(sharedAccounts.reduce((sum, item) => sum + item.balance, 0))} shared net worth</h2><p>{sharedAccounts.length} shared accounts · {personalAccounts.length} personal accounts stay private in each member’s Personal view.</p></div></section>
-    <div className="dashboard-grid"><section className="panel members-panel"><PanelHeading eyebrow="People and access" title="Household members" action="Manage" onAction={onSetup} /><div className="member-list">{visibleMembers.map((member) => <div key={member.email}><span className="avatar">{(member.display_name || member.email).slice(0, 1).toUpperCase()}</span><span><strong>{member.display_name || member.email}</strong><small>{member.email}</small></span><span className={member.status === "active" ? "member-status active-member" : "member-status"}>{member.status === "active" ? "Active" : "Invite pending"}</span><small>{member.role}</small></div>)}</div><div className="info-note"><ShieldCheck size={17} /><span>Invited members claim the shared space when they sign in with the same email. Personal records remain in their own space.</span></div></section><section className="panel access-panel"><PanelHeading eyebrow="Ownership map" title="What appears where" /><div className="access-map"><div><span>Personal</span><strong>{personalAccounts.length} accounts</strong><small>Visible to their owner</small></div><ChevronRight size={18} /><div><span>Household</span><strong>{sharedAccounts.length} accounts</strong><small>Visible to active members</small></div><ChevronRight size={18} /><div><span>Together</span><strong>{accounts.length} accounts</strong><small>Combined without duplication</small></div></div></section></div>
-    <section className="panel household-accounts"><PanelHeading eyebrow="Shared balance sheet" title="Accounts this household can see" /><div className="account-card-grid">{sharedAccounts.map((account) => <AccountCard key={account.id} account={account} onEdit={() => onEditAccount(account)} />)}{!sharedAccounts.length && <EmptyState icon={<Users />} title="Nothing shared yet" copy="Edit an account and set Belongs to Household." />}</div></section>
+    <div className="dashboard-grid"><section className="panel members-panel"><PanelHeading eyebrow="People and access" title="Together members" action="Manage" onAction={onSetup} /><div className="member-list">{visibleMembers.map((member) => <div key={member.email}><span className="avatar">{(member.display_name || member.email).slice(0, 1).toUpperCase()}</span><span><strong>{member.display_name || member.email}</strong><small>{member.email}</small></span><span className={member.status === "active" ? "member-status active-member" : "member-status"}>{member.status === "active" ? "Active" : "Invite pending"}</span><small>{member.role}</small></div>)}</div><div className="info-note"><ShieldCheck size={17} /><span>An invitation is activated only when that person signs in with the same verified Google email. Database access rules keep every Personal space owner-only.</span></div></section><section className="panel access-panel"><PanelHeading eyebrow="Visibility" title="What the other person can see" /><div className="privacy-map"><div><span>Personal</span><strong>{personalAccounts.length} accounts</strong><small>Only you can read these records.</small></div><div><span>Shared in Together</span><strong>{sharedAccounts.length} accounts</strong><small>Visible to active Together members.</small></div></div><p className="privacy-caption">Your Together dashboard currently combines {accounts.length} accounts visible to you, without counting transfers as income or spending.</p></section></div>
+    <section className="panel household-accounts"><PanelHeading eyebrow="Shared balance sheet" title="Accounts shared in Together" /><div className="account-card-grid">{sharedAccounts.map((account) => <AccountCard key={account.id} account={account} onEdit={() => onEditAccount(account)} />)}{!sharedAccounts.length && <EmptyState icon={<Users />} title="Nothing shared yet" copy="Edit an account and set its visibility to Shared in Together." />}</div></section>
   </div>;
 }
 
@@ -1385,7 +1403,7 @@ function LedgerTable({ transactions, accounts, onEdit, onDelete }: { transaction
                   <td><strong>{transaction.description}</strong>{transaction.note && <small>{transaction.note}</small>}</td>
                   <td>{account?.name || "Unknown"}</td>
                   <td>{transaction.category}</td>
-                  <td>{transaction.space === "household" ? "Household" : "Personal"}</td>
+                  <td>{transaction.space === "household" ? "Together" : "Personal"}</td>
                   <td><span className={`table-type type-${transaction.type}`}>{transaction.type}</span></td>
                   <td className={`table-amount amount-${transaction.type}`}>{transaction.type === "income" ? "+" : transaction.type === "expense" ? "−" : ""}{formatMoney(transaction.amount)}</td>
                   <td><div className="table-actions"><button onClick={(event) => { event.stopPropagation(); onEdit(transaction); }} aria-label={`Edit ${transaction.description}`}><Edit3 size={16} /></button><button onClick={(event) => { event.stopPropagation(); onDelete(transaction); }} aria-label={`Delete ${transaction.description}`}><Trash2 size={16} /></button></div></td>
@@ -1603,6 +1621,17 @@ function EmptyState({ icon, title, copy }: { icon: React.ReactNode; title: strin
   return <div className="empty-state"><span>{icon}</span><strong>{title}</strong><p>{copy}</p></div>;
 }
 
+function AccountRequired({ forWhat, onAddAccount }: { forWhat: string; onAddAccount: () => void }) {
+  return (
+    <div className="account-required">
+      <span><WalletCards size={23} /></span>
+      <h3>First, add where this money lives.</h3>
+      <p>{forWhat} needs a real account so balances and transfers stay accurate. You will return here immediately after adding it.</p>
+      <button className="primary-button" onClick={onAddAccount}><Plus size={17} /> Add first account</button>
+    </div>
+  );
+}
+
 function ModalShell({ title, eyebrow, onClose, children }: { title: string; eyebrow: string; onClose: () => void; children: React.ReactNode }) {
   const titleId = React.useId();
   useEffect(() => {
@@ -1650,12 +1679,12 @@ function localCaptureDraft(text: string, accounts: Account[], scope: ViewScope):
   const lower = text.toLowerCase();
   const amountMatch = text.match(/(?:s\$|\$)?\s*(\d+(?:\.\d{1,2})?)/i);
   const type: TransactionType = /\b(transfer|move|shift|paynow to)\b/.test(lower) ? "transfer" : /\b(salary|income|earned|received|refund)\b/.test(lower) ? "income" : "expense";
-  const account = accounts.find((item) => lower.includes(item.name.toLowerCase()) || lower.includes(item.institution.toLowerCase())) || accounts.find((item) => item.space === (scope === "household" ? "household" : "personal")) || accounts[0];
+  const account = accounts.find((item) => lower.includes(item.name.toLowerCase()) || lower.includes(item.institution.toLowerCase())) || accounts.find((item) => item.space === (scope === "all" ? "household" : "personal")) || accounts[0];
   const destination = type === "transfer" ? accounts.find((item) => item.id !== account?.id && lower.includes(item.name.toLowerCase())) : undefined;
   const category = /grab|taxi|mrt|bus|transport/.test(lower) ? "Transport" : /grocery|fairprice|cold storage|supermarket/.test(lower) ? "Groceries" : /netflix|movie|spotify|entertainment/.test(lower) ? "Entertainment" : /doctor|gym|health|physio/.test(lower) ? "Health" : /rent|utility|home/.test(lower) ? "Home" : /trip|flight|hotel|travel/.test(lower) ? "Travel" : "Food & dining";
   let description = text.replace(/(?:s\$|\$)?\s*\d+(?:\.\d{1,2})?/i, "").replace(/\b(i|just|spent|paid|received|earned|transfer|transferred|move|moved|dollars?|bucks?|at|from|using|today|yesterday)\b/gi, " ").replace(/\s+/g, " ").trim();
   description = description.replace(/^to\s+/i, "").replace(/\s+to\s+.+$/i, "").trim() || (type === "transfer" ? "Account transfer" : type === "income" ? "Income" : "Expense");
-  return { type, amount: amountMatch ? Number(amountMatch[1]) : undefined, description, date: todayIso(), category: type === "expense" ? category : type === "income" ? "Income" : "Transfer", accountId: account?.id, transferAccountId: destination?.id, space: account?.space || (scope === "household" ? "household" : "personal"), source: "voice" };
+  return { type, amount: amountMatch ? Number(amountMatch[1]) : undefined, description, date: todayIso(), category: type === "expense" ? category : type === "income" ? "Income" : "Transfer", accountId: account?.id, transferAccountId: destination?.id, space: account?.space || (scope === "all" ? "household" : "personal"), source: "voice" };
 }
 
 function CaptureModal({ accounts, profile, scope, qwenConfigured, onClose, onTransaction, onPlan, onAsk, onProfile }: { accounts: Account[]; profile: FinanceData["profile"]; scope: ViewScope; qwenConfigured: boolean; onClose: () => void; onTransaction: (draft: Partial<Transaction>) => void; onPlan: (event: PlannedEvent) => void; onAsk: (prompt: string) => void; onProfile: (profile: FinanceData["profile"]) => void }) {
@@ -1714,7 +1743,7 @@ function CaptureModal({ accounts, profile, scope, qwenConfigured, onClose, onTra
     if (intent === "plan") {
       const amount = Number(trimmed.match(/(?:s\$|\$)?\s*(\d+(?:\.\d{1,2})?)/i)?.[1] || 0);
       const target = new Date(); target.setMonth(target.getMonth() + 6);
-      onPlan({ id: uid("event"), name: trimmed.replace(/(?:s\$|\$)?\s*\d+(?:\.\d{1,2})?/i, "").replace(/\b(plan|budget|for|a|an)\b/gi, " ").replace(/\s+/g, " ").trim() || "Future plan", amount, date: target.toISOString().slice(0, 10), kind: /trip|holiday|japan|travel|flight/i.test(trimmed) ? "travel" : /car|lambo/i.test(trimmed) ? "car" : /home|reno|house/i.test(trimmed) ? "home" : "other", space: scope === "household" ? "household" : "personal", includeInPlan: true, note: trimmed });
+      onPlan({ id: uid("event"), name: trimmed.replace(/(?:s\$|\$)?\s*\d+(?:\.\d{1,2})?/i, "").replace(/\b(plan|budget|for|a|an)\b/gi, " ").replace(/\s+/g, " ").trim() || "Future plan", amount, date: target.toISOString().slice(0, 10), kind: /trip|holiday|japan|travel|flight/i.test(trimmed) ? "travel" : /car|lambo/i.test(trimmed) ? "car" : /home|reno|house/i.test(trimmed) ? "home" : "other", space: scope === "all" ? "household" : "personal", includeInPlan: true, note: trimmed });
       return;
     }
     let draft = localCaptureDraft(trimmed, accounts, scope);
@@ -1735,10 +1764,10 @@ function CaptureModal({ accounts, profile, scope, qwenConfigured, onClose, onTra
 
   function addLexiconWord() { const value = newWord.trim(); if (!value) return; onProfile({ ...profile, voiceLexicon: [...new Set([...(profile.voiceLexicon || []), value])] }); setNewWord(""); }
 
-  return <ModalShell eyebrow="Voice-first financial capture" title="Tell Lifetime" onClose={onClose}><div className="capture-shell"><div className="capture-intents">{(["transaction", "plan", "question"] as const).map((item) => <button key={item} className={intent === item ? "capture-intent-active" : ""} onClick={() => setIntent(item)}>{item === "transaction" ? <ArrowLeftRight size={17} /> : item === "plan" ? <CalendarDays size={17} /> : <MessageCircle size={17} />}{item === "transaction" ? "Log money" : item === "plan" ? "Plan ahead" : "Ask Coach"}</button>)}</div><div className="capture-mode-switch"><button className={inputMode === "voice" ? "active" : ""} onClick={() => setInputMode("voice")}><Mic size={16} /> Talk</button><button className={inputMode === "type" ? "active" : ""} onClick={() => setInputMode("type")}><Edit3 size={16} /> Type</button></div>{inputMode === "voice" && <div className={listening ? "voice-stage voice-listening" : "voice-stage"}><button className="voice-orb" onClick={listening ? stopVoice : startVoice} aria-label={listening ? "Stop listening" : "Start listening"}><span><Mic size={28} /></span><i /><i /><i /></button><strong>{processing ? "Understanding your words…" : listening ? "I’m listening… tap when finished" : "Tap, then speak naturally"}</strong><p>{qwenConfigured ? "Qwen speech recognises multilingual accents; your own vocabulary nudges exact spellings." : "Browser speech capture is active. Qwen speech will take over when its key is connected."}</p></div>}<label className="field capture-transcript"><span>{inputMode === "voice" ? "Transcript — correct anything before continuing" : intent === "transaction" ? "Try “Spent $13.80 at Yochi on Revolut”" : intent === "plan" ? "Try “Plan $12,000 for Japan next April”" : "What do you want to understand?"}</span><textarea autoFocus={inputMode === "type"} value={text} onChange={(event) => setText(event.target.value)} placeholder="Your words appear here…" /></label><div className="voice-lexicon"><div><strong>Your vocabulary</strong><small>Names, Singlish, merchants and community terms that should be spelt exactly.</small></div><div className="lexicon-tags">{(profile.voiceLexicon || []).slice(0, 8).map((word) => <span key={word}>{word}</span>)}</div><div className="lexicon-add"><input value={newWord} onChange={(event) => setNewWord(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addLexiconWord(); } }} placeholder="Add Yochi, PayNow…" /><button onClick={addLexiconWord}><Plus size={16} /></button></div></div>{error && <p className="form-error">{error}</p>}<div className="form-actions"><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={continueCapture} disabled={processing}>{processing ? "Understanding…" : intent === "transaction" ? "Review transaction" : intent === "plan" ? "Add to forecast" : "Ask Coach"}</button></div></div></ModalShell>;
+  return <ModalShell eyebrow="Voice-first financial capture" title="Tell Lifetime" onClose={onClose}><div className="capture-shell"><div className="capture-intents">{(["transaction", "plan", "question"] as const).map((item) => <button key={item} className={intent === item ? "capture-intent-active" : ""} onClick={() => setIntent(item)}>{item === "transaction" ? <ArrowLeftRight size={17} /> : item === "plan" ? <CalendarDays size={17} /> : <MessageCircle size={17} />}{item === "transaction" ? "Log money" : item === "plan" ? "Plan ahead" : "Ask Coach"}</button>)}</div><div className="capture-mode-switch"><button className={inputMode === "voice" ? "active" : ""} onClick={() => setInputMode("voice")}><Mic size={16} /> Talk</button><button className={inputMode === "type" ? "active" : ""} onClick={() => setInputMode("type")}><Edit3 size={16} /> Type</button></div>{inputMode === "voice" && <div className={listening ? "voice-stage voice-listening" : "voice-stage"}><button className="voice-orb" onClick={listening ? stopVoice : startVoice} aria-label={listening ? "Stop listening" : "Start listening"}><span><Mic size={28} /></span><i /><i /><i /></button><strong>{processing ? "Understanding your words…" : listening ? "I’m listening… tap when finished" : "Tap, then speak naturally"}</strong><p>{qwenConfigured ? "Enhanced speech recognition is active; your own vocabulary nudges exact spellings." : "Browser speech capture is active, and you can correct the transcript before saving."}</p></div>}<label className="field capture-transcript"><span>{inputMode === "voice" ? "Transcript — correct anything before continuing" : intent === "transaction" ? "Try “Spent $13.80 at Yochi on Revolut”" : intent === "plan" ? "Try “Plan $12,000 for Japan next April”" : "What do you want to understand?"}</span><textarea autoFocus={inputMode === "type"} value={text} onChange={(event) => setText(event.target.value)} placeholder="Your words appear here…" /></label><div className="voice-lexicon"><div><strong>Your vocabulary</strong><small>Names, Singlish, merchants and community terms that should be spelt exactly.</small></div><div className="lexicon-tags">{(profile.voiceLexicon || []).slice(0, 8).map((word) => <span key={word}>{word}</span>)}</div><div className="lexicon-add"><input value={newWord} onChange={(event) => setNewWord(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addLexiconWord(); } }} placeholder="Add Yochi, PayNow…" /><button onClick={addLexiconWord}><Plus size={16} /></button></div></div>{error && <p className="form-error">{error}</p>}<div className="form-actions"><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={continueCapture} disabled={processing}>{processing ? "Understanding…" : intent === "transaction" ? "Review transaction" : intent === "plan" ? "Add to forecast" : "Ask Coach"}</button></div></div></ModalShell>;
 }
 
-function TransactionModal({ initial, accounts, scope, onClose, onSubmit }: { initial?: Partial<Transaction> | null; accounts: Account[]; scope: ViewScope; onClose: () => void; onSubmit: (transaction: Transaction) => void }) {
+function TransactionModal({ initial, accounts, scope, onNeedAccount, onClose, onSubmit }: { initial?: Partial<Transaction> | null; accounts: Account[]; scope: ViewScope; onNeedAccount: () => void; onClose: () => void; onSubmit: (transaction: Transaction) => void }) {
   const defaultAccount = accounts.find((account) => account.space === (scope === "all" ? "personal" : scope)) || accounts[0];
   const [type, setType] = useState<TransactionType>(initial?.type || "expense");
   const [amount, setAmount] = useState(initial?.amount != null ? String(initial.amount) : "");
@@ -1759,7 +1788,7 @@ function TransactionModal({ initial, accounts, scope, onClose, onSubmit }: { ini
     if (type === "transfer" && (!transferAccountId || transferAccountId === accountId)) return;
     const transactionScope: SpaceId = type === "transfer" && destination?.space === "household"
       ? "household"
-      : selectedAccount?.space || (scope === "household" ? "household" : "personal");
+      : selectedAccount?.space || (scope === "all" ? "household" : "personal");
     onSubmit({
       id: initial?.id || uid("tx"),
       type,
@@ -1776,7 +1805,8 @@ function TransactionModal({ initial, accounts, scope, onClose, onSubmit }: { ini
   }
 
   return (
-    <ModalShell eyebrow={initial?.id ? "Update the ledger" : "Quick capture"} title={initial?.id ? "Edit transaction" : "Review transaction"} onClose={onClose}>
+    <ModalShell eyebrow={initial?.id ? "Update the ledger" : "Quick capture"} title={initial?.id ? "Edit transaction" : "Add transaction"} onClose={onClose}>
+      {!accounts.length ? <AccountRequired forWhat="A transaction" onAddAccount={onNeedAccount} /> :
       <form className="form-stack" onSubmit={submit}>
         <div className="type-switcher">
           {(["expense", "income", "transfer"] as TransactionType[]).map((option) => <button type="button" key={option} className={type === option ? "type-active" : ""} onClick={() => setType(option)}>{option === "expense" ? <ArrowUpRight size={16} /> : option === "income" ? <ArrowDownLeft size={16} /> : <ArrowLeftRight size={16} />}{option}</button>)}
@@ -1795,17 +1825,17 @@ function TransactionModal({ initial, accounts, scope, onClose, onSubmit }: { ini
         </div>
         {type === "transfer" && <div className="info-note"><ShieldCheck size={17} /><span>This moves money between accounts. It will not change your income, spending, or savings rate.</span></div>}
         <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{initial?.id ? "Save changes" : `Save ${type}`}</button></div>
-      </form>
+      </form>}
     </ModalShell>
   );
 }
 
-function AccountModal({ initial, scope, profileName, partnerName, onClose, onSubmit, onDelete }: { initial?: Account | null; scope: ViewScope; profileName: string; partnerName: string; onClose: () => void; onSubmit: (account: Account) => void; onDelete?: () => void }) {
+function AccountModal({ initial, scope, canShare, profileName, partnerName, onClose, onSubmit, onDelete }: { initial?: Account | null; scope: ViewScope; canShare: boolean; profileName: string; partnerName: string; onClose: () => void; onSubmit: (account: Account) => void; onDelete?: () => void }) {
   const [name, setName] = useState(initial?.name || "");
   const [institution, setInstitution] = useState(initial?.institution || "");
   const [type, setType] = useState<AccountType>(initial?.type || "checking");
   const [balance, setBalance] = useState(initial ? String(initial.balance) : "");
-  const [space, setSpace] = useState<SpaceId>(initial?.space || (scope === "household" ? "household" : "personal"));
+  const [space, setSpace] = useState<SpaceId>(initial?.space || (scope === "all" ? "household" : "personal"));
   const [last4, setLast4] = useState(initial?.last4 || "");
 
   function submit(event: FormEvent) {
@@ -1824,7 +1854,7 @@ function AccountModal({ initial, scope, profileName, partnerName, onClose, onSub
           <label className="field"><span>Institution</span><input required value={institution} onChange={(event) => setInstitution(event.target.value)} placeholder="DBS, HSBC, Revolut…" /></label>
           <label className="field"><span>Account type</span><select value={type} onChange={(event) => setType(event.target.value as AccountType)}>{Object.entries(accountTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label className="field"><span>{["credit", "loan"].includes(type) ? "Amount owed" : "Current value or balance"}</span><input required type="number" step="0.01" value={balance} onChange={(event) => setBalance(event.target.value)} placeholder="0.00" /></label>
-          <label className="field"><span>Belongs to</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Personal</option><option value="household">Household</option></select></label>
+          <label className="field"><span>Visibility</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Private to me</option>{canShare && <option value="household">Shared in Together</option>}</select></label>
           <label className="field"><span>Last four digits (optional)</span><input maxLength={4} inputMode="numeric" value={last4} onChange={(event) => setLast4(event.target.value.replace(/\D/g, ""))} placeholder="2841" /></label>
         </div>
         <div className="form-actions">{initial && onDelete && <button type="button" className="secondary-button danger-button form-delete-button" onClick={onDelete}><Trash2 size={16} /> Remove</button>}<span className="form-action-spacer" /><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{initial ? "Save changes" : "Add account"}</button></div>
@@ -1833,59 +1863,78 @@ function AccountModal({ initial, scope, profileName, partnerName, onClose, onSub
   );
 }
 
-function HouseholdModal({ profile, viewerEmail, onClose, onSubmit }: { profile: FinanceData["profile"]; viewerEmail: string; onClose: () => void; onSubmit: (profile: FinanceData["profile"]) => void }) {
+function HouseholdModal({ profile, members, viewerEmail, onClose, onSubmit }: { profile: FinanceData["profile"]; members: Array<{ email: string; display_name: string; role: string; status: string }>; viewerEmail: string; onClose: () => void; onSubmit: (profile: FinanceData["profile"], prepareEmail?: boolean) => void }) {
   const [name, setName] = useState(profile.name);
   const [householdName, setHouseholdName] = useState(profile.householdName);
   const [partnerName, setPartnerName] = useState(profile.partnerName || "");
   const [partnerEmail, setPartnerEmail] = useState(profile.partnerEmail || "");
   const [voiceLocale, setVoiceLocale] = useState(profile.voiceLocale || "en-SG");
   const [voiceLexicon, setVoiceLexicon] = useState((profile.voiceLexicon || []).join(", "));
+  const [error, setError] = useState("");
+  const invitedMember = members.find((member) => member.email.toLowerCase() !== viewerEmail.toLowerCase());
+  const inviteStatus = invitedMember?.status || (profile.partnerEmail ? "pending" : null);
 
   function submit(event: FormEvent) {
     event.preventDefault();
-    if (!name.trim() || !householdName.trim() || !partnerName.trim()) return;
+    const normalizedEmail = partnerEmail.trim().toLowerCase();
+    if (!name.trim() || !householdName.trim() || !partnerName.trim() || !normalizedEmail) return;
+    if (normalizedEmail === viewerEmail.toLowerCase()) {
+      setError("Invite the other person’s Google email, not the email you are signed in with.");
+      return;
+    }
+    const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
     onSubmit({
       ...profile,
       name: name.trim(),
       householdName: householdName.trim(),
       partnerName: partnerName.trim(),
-      partnerEmail: partnerEmail.trim(),
+      partnerEmail: normalizedEmail,
       householdStartedAt: profile.householdStartedAt || todayIso(),
       voiceLocale,
       voiceLexicon: voiceLexicon.split(",").map((item) => item.trim()).filter(Boolean),
-    });
+    }, submitter?.value === "email");
   }
 
   return (
-    <ModalShell eyebrow="Personal + household" title="Set up your household" onClose={onClose}>
+    <ModalShell eyebrow="Personal + Together" title={profile.partnerEmail ? "Manage Together" : "Invite someone to Together"} onClose={onClose}>
       <form className="form-stack" onSubmit={submit}>
         <div className="household-people">
           <div><span className="avatar">{name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span><span><strong>{name || "You"}</strong><small>{viewerEmail} · signed in</small></span><Check size={17} /></div>
-          <div><span className="avatar partner-avatar">{partnerName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "P"}</span><span><strong>{partnerName || "Partner"}</strong><small>{partnerEmail || "Add their email below"}</small></span><Users size={17} /></div>
+          <div><span className="avatar partner-avatar">{partnerName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "P"}</span><span><strong>{partnerName || "Partner"}</strong><small>{partnerEmail || "Add their Google email below"}</small></span>{inviteStatus === "active" ? <Check size={17} /> : <Mail size={17} />}</div>
         </div>
         <div className="form-grid">
           <label className="field"><span>Your display name</span><input required value={name} onChange={(event) => setName(event.target.value)} /></label>
-          <label className="field"><span>Household name</span><input required value={householdName} onChange={(event) => setHouseholdName(event.target.value)} placeholder="Parker household" /></label>
+          <label className="field"><span>Together name</span><input required value={householdName} onChange={(event) => setHouseholdName(event.target.value)} placeholder="Peter & MJ" /></label>
           <label className="field"><span>Partner or family member</span><input required value={partnerName} onChange={(event) => setPartnerName(event.target.value)} placeholder="Their name" /></label>
-          <label className="field"><span>Their email</span><input type="email" value={partnerEmail} onChange={(event) => setPartnerEmail(event.target.value)} placeholder="partner@example.com" /></label>
+          <label className="field"><span>Their Google email</span><input required disabled={inviteStatus === "active"} type="email" value={partnerEmail} onChange={(event) => { setPartnerEmail(event.target.value); setError(""); }} placeholder="partner@example.com" /></label>
           <label className="field"><span>Voice and accent region</span><select value={voiceLocale} onChange={(event) => setVoiceLocale(event.target.value)}><option value="en-SG">English · Singapore</option><option value="en-IN">English · India</option><option value="en-GB">English · United Kingdom</option><option value="en-US">English · United States</option><option value="ms-MY">Malay · Malaysia</option><option value="zh-SG">Mandarin · Singapore</option></select></label>
           <label className="field"><span>Voice vocabulary</span><input value={voiceLexicon} onChange={(event) => setVoiceLexicon(event.target.value)} placeholder="Yochi, PayNow, kopitiam…" /></label>
         </div>
-        <div className="info-note"><ShieldCheck size={17} /><span>Use Personal for private accounts and Household for shared ones. An invite is claimed when that person signs in with the same email. Together combines both spaces without counting transfers as spending.</span></div>
-        <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">Save household</button></div>
+        {error && <p className="form-error">{error}</p>}
+        <div className="invite-explainer">
+          <div><span>1</span><p><strong>Save the invitation</strong><small>Lifetime records the invited Google email as pending.</small></p></div>
+          <div><span>2</span><p><strong>Send the prepared email</strong><small>Your own mail app sends a login link; Lifetime does not read your contacts.</small></p></div>
+          <div><span>3</span><p><strong>They sign in with that email</strong><small>The verified match activates Together automatically.</small></p></div>
+        </div>
+        <details className="privacy-details">
+          <summary><ShieldCheck size={17} /> Who can see the financial data?</summary>
+          <p><strong>Family members:</strong> database row-level rules keep Personal records owner-only. Active members can read only records deliberately marked Shared in Together.</p>
+          <p><strong>Important:</strong> the Supabase project administrator can still administer the hosted database. This is protected access, not zero-knowledge end-to-end encryption.</p>
+        </details>
+        <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><span className="form-action-spacer" /><button className="secondary-button" type="submit" value="save">Save only</button>{inviteStatus !== "active" && <button className="primary-button" type="submit" value="email"><Mail size={16} /> {inviteStatus === "pending" ? "Save & resend invite" : "Save & draft invite"}</button>}</div>
       </form>
     </ModalShell>
   );
 }
 
-function GoalModal({ initial, scope, onClose, onSubmit, onDelete }: { initial?: Goal | null; scope: ViewScope; onClose: () => void; onSubmit: (goal: Goal) => void; onDelete?: () => void }) {
+function GoalModal({ initial, scope, canShare, onClose, onSubmit, onDelete }: { initial?: Goal | null; scope: ViewScope; canShare: boolean; onClose: () => void; onSubmit: (goal: Goal) => void; onDelete?: () => void }) {
   const [name, setName] = useState(initial?.name || "");
   const [target, setTarget] = useState(initial ? String(initial.target) : "");
   const [current, setCurrent] = useState(initial ? String(initial.current) : "");
   const [targetDate, setTargetDate] = useState(initial?.targetDate || "");
   const [monthlyContribution, setMonthlyContribution] = useState(initial?.monthlyContribution ? String(initial.monthlyContribution) : "");
   const [priority, setPriority] = useState<NonNullable<Goal["priority"]>>(initial?.priority || "important");
-  const [space, setSpace] = useState<SpaceId>(initial?.space || (scope === "household" ? "household" : "personal"));
+  const [space, setSpace] = useState<SpaceId>(initial?.space || (scope === "all" ? "household" : "personal"));
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -1905,7 +1954,7 @@ function GoalModal({ initial, scope, onClose, onSubmit, onDelete }: { initial?: 
           <label className="field"><span>Target date</span><input required type="date" value={targetDate} onChange={(event) => setTargetDate(event.target.value)} /></label>
           <label className="field"><span>Monthly contribution</span><input type="number" min="0" step="1" value={monthlyContribution} onChange={(event) => setMonthlyContribution(event.target.value)} placeholder="800" /></label>
           <label className="field"><span>Priority</span><select value={priority} onChange={(event) => setPriority(event.target.value as NonNullable<Goal["priority"]>)}><option value="essential">Essential</option><option value="important">Important</option><option value="flexible">Flexible</option></select></label>
-          <label className="field"><span>Goal space</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Personal</option><option value="household">Household</option></select></label>
+          <label className="field"><span>Visibility</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Private to me</option>{canShare && <option value="household">Shared in Together</option>}</select></label>
         </div>
         <div className="form-actions">{initial && onDelete && <button type="button" className="secondary-button danger-button form-delete-button" onClick={onDelete}><Trash2 size={16} /> Delete</button>}<span className="form-action-spacer" /><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{initial ? "Save changes" : "Create goal"}</button></div>
       </form>
@@ -1913,12 +1962,12 @@ function GoalModal({ initial, scope, onClose, onSubmit, onDelete }: { initial?: 
   );
 }
 
-function PlannedEventModal({ initial, scope, onClose, onSubmit, onDelete }: { initial?: PlannedEvent | null; scope: ViewScope; onClose: () => void; onSubmit: (event: PlannedEvent) => void; onDelete?: () => void }) {
+function PlannedEventModal({ initial, scope, canShare, onClose, onSubmit, onDelete }: { initial?: PlannedEvent | null; scope: ViewScope; canShare: boolean; onClose: () => void; onSubmit: (event: PlannedEvent) => void; onDelete?: () => void }) {
   const [name, setName] = useState(initial?.name || "");
   const [amount, setAmount] = useState(initial ? String(initial.amount) : "");
   const [date, setDate] = useState(initial?.date || "");
   const [kind, setKind] = useState<PlannedEvent["kind"]>(initial?.kind || "travel");
-  const [space, setSpace] = useState<SpaceId>(initial?.space || (scope === "household" ? "household" : "personal"));
+  const [space, setSpace] = useState<SpaceId>(initial?.space || (scope === "all" ? "household" : "personal"));
   const [note, setNote] = useState(initial?.note || "");
   function submit(event: FormEvent) {
     event.preventDefault(); const parsed = Number(amount); if (!name.trim() || !date || !Number.isFinite(parsed) || parsed <= 0) return;
@@ -1932,7 +1981,7 @@ function PlannedEventModal({ initial, scope, onClose, onSubmit, onDelete }: { in
           <label className="field"><span>Estimated total cost</span><input required type="number" min="1" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="12000" /></label>
           <label className="field"><span>When</span><input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
           <label className="field"><span>Kind of plan</span><select value={kind} onChange={(event) => setKind(event.target.value as PlannedEvent["kind"])}><option value="travel">Travel</option><option value="home">Home</option><option value="family">Family</option><option value="education">Education</option><option value="car">Car</option><option value="other">Other</option></select></label>
-          <label className="field"><span>Plan space</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Personal</option><option value="household">Household</option></select></label>
+          <label className="field"><span>Visibility</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Private to me</option>{canShare && <option value="household">Shared in Together</option>}</select></label>
           <label className="field full-field"><span>Assumptions or notes</span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Flights, hotels, food and shopping" /></label>
         </div>
         <div className="info-note"><WandSparkles size={17} /><span>Lifetime compares this cost with your monthly surplus and goal contributions, then shows the estimated timing trade-off.</span></div>
@@ -1942,7 +1991,7 @@ function PlannedEventModal({ initial, scope, onClose, onSubmit, onDelete }: { in
   );
 }
 
-function RecurringModal({ initial, scope, accounts, onClose, onSubmit, onDelete }: { initial?: RecurringItem | null; scope: ViewScope; accounts: Account[]; onClose: () => void; onSubmit: (item: RecurringItem) => void; onDelete?: () => void }) {
+function RecurringModal({ initial, scope, accounts, onNeedAccount, onClose, onSubmit, onDelete }: { initial?: RecurringItem | null; scope: ViewScope; accounts: Account[]; onNeedAccount: () => void; onClose: () => void; onSubmit: (item: RecurringItem) => void; onDelete?: () => void }) {
   const [name, setName] = useState(initial?.name || "");
   const [amount, setAmount] = useState(initial ? String(initial.amount) : "");
   const [cadence, setCadence] = useState<RecurringItem["cadence"]>(initial?.cadence || "monthly");
@@ -1955,11 +2004,12 @@ function RecurringModal({ initial, scope, accounts, onClose, onSubmit, onDelete 
     event.preventDefault();
     const parsed = Number(amount);
     if (!name.trim() || !nextDate || !accountId || !Number.isFinite(parsed) || parsed <= 0) return;
-    onSubmit({ id: initial?.id || uid("recurring"), name: name.trim(), amount: parsed, cadence, nextDate, accountId, category, space: selectedAccount?.space || (scope === "household" ? "household" : "personal"), active: initial?.active ?? true });
+    onSubmit({ id: initial?.id || uid("recurring"), name: name.trim(), amount: parsed, cadence, nextDate, accountId, category, space: selectedAccount?.space || (scope === "all" ? "household" : "personal"), active: initial?.active ?? true });
   }
 
   return (
     <ModalShell eyebrow="Predict what’s next" title={initial ? "Edit recurring payment" : "Add recurring payment"} onClose={onClose}>
+      {!accounts.length ? <AccountRequired forWhat="A recurring payment" onAddAccount={onNeedAccount} /> :
       <form className="form-stack" onSubmit={submit}>
         <div className="form-grid">
           <label className="field"><span>Name</span><input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="Phone plan" /></label>
@@ -1970,12 +2020,12 @@ function RecurringModal({ initial, scope, accounts, onClose, onSubmit, onDelete 
           <label className="field"><span>Category</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{expenseCategories.map((item) => <option key={item}>{item}</option>)}</select></label>
         </div>
         <div className="form-actions">{initial && onDelete && <button type="button" className="secondary-button danger-button form-delete-button" onClick={onDelete}><Trash2 size={16} /> Delete</button>}<span className="form-action-spacer" /><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{initial ? "Save changes" : "Add recurring payment"}</button></div>
-      </form>
+      </form>}
     </ModalShell>
   );
 }
 
-function ImportModal({ data, scope, onClose, setData, onStage, notify }: { data: FinanceData; scope: ViewScope; onClose: () => void; setData: React.Dispatch<React.SetStateAction<FinanceData>>; onStage: (transactions: Transaction[]) => void; notify: (message: string) => void }) {
+function ImportModal({ data, scope, onNeedAccount, onClose, setData, onStage, notify }: { data: FinanceData; scope: ViewScope; onNeedAccount: () => void; onClose: () => void; setData: React.Dispatch<React.SetStateAction<FinanceData>>; onStage: (transactions: Transaction[]) => void; notify: (message: string) => void }) {
   const [text, setText] = useState("");
   const [report, setReport] = useState<ImportReport | null>(null);
 
@@ -2001,6 +2051,7 @@ function ImportModal({ data, scope, onClose, setData, onStage, notify }: { data:
 
   return (
     <ModalShell eyebrow="Sheets and statements" title="Import transactions" onClose={onClose}>
+      {!data.accounts.length ? <AccountRequired forWhat="A transaction import" onAddAccount={onNeedAccount} /> : <>
       <div className="import-copy"><span className="import-icon"><FileSpreadsheet size={22} /></span><div><strong>Paste rows from Google Sheets or a CSV</strong><p>Use the columns date, description, amount, type, category, and account. Negative amounts become expenses when type is blank. Rows matching a transaction you already have are skipped.</p></div></div>
       <textarea className="import-textarea" value={text} onChange={(event) => { setText(event.target.value); setReport(null); }} placeholder={"date,description,amount,type,category,account\n2026-08-14,Coffee,6.50,expense,Food & dining,Everyday"} aria-label="Transaction CSV data" />
       <div className="info-note"><ShieldCheck size={17} /><span>Transfers are intentionally skipped here so they can be linked safely between two accounts in the ledger.</span></div>
@@ -2020,6 +2071,7 @@ function ImportModal({ data, scope, onClose, setData, onStage, notify }: { data:
         </div>
       )}
       <div className="form-actions"><button className="secondary-button" onClick={onClose}>{report && !report.error ? "Done" : "Cancel"}</button><span className="form-action-spacer" /><button className="secondary-button" onClick={reviewRows}><Layers3 size={16} /> Review first</button><button className="primary-button" onClick={importRows}>Import all</button></div>
+      </>}
     </ModalShell>
   );
 }

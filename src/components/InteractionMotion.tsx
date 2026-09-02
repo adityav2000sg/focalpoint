@@ -20,7 +20,7 @@ export default function InteractionMotion() {
           { transform: "scale(1.006)", filter: "brightness(1.015)", offset: 0.72 },
           { transform: "scale(1)", filter: "brightness(1)" },
         ],
-        { duration: 520, easing: "cubic-bezier(.2,.75,.2,1)" },
+        { duration: 640, easing: "cubic-bezier(.2,.75,.2,1)" },
       );
     }
 
