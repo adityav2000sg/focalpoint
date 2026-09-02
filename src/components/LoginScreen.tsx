@@ -37,7 +37,7 @@ export default function LoginScreen({ configured, error }: { configured: boolean
         <p className="auth-copy">Private by default, shared intentionally, and built so transfers never pretend to be spending.</p>
         <div className="auth-promises">
           <span><LockKeyhole size={17} /> Your personal records stay yours</span>
-          <span><Users size={17} /> Share only the household view</span>
+          <span><Users size={17} /> Share only what you put in Together</span>
         </div>
         {configured ? (
           <button className="google-button" onClick={signIn} disabled={working}>

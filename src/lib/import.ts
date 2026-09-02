@@ -121,7 +121,7 @@ export function importTransactions(
       description,
       category: row.category || (type === "income" ? "Income" : "Other"),
       accountId: account.id,
-      space: account.space || ((scope === "household" ? "household" : "personal") as SpaceId),
+      space: account.space || ((scope === "all" ? "household" : "personal") as SpaceId),
       source: "sheet",
     });
   });

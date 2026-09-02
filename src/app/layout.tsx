@@ -3,7 +3,7 @@ import InteractionMotion from "@/components/InteractionMotion";
 import "./globals.css";
 
 const siteTitle = "Lifetime — Finance for the life you’re building";
-const siteDescription = "A voice-first personal and household finance hub for trusted transactions, shared money, intelligent goals, and the future you are building.";
+const siteDescription = "A voice-first Personal and Together finance hub for trusted transactions, shared money, intelligent goals, and the future you are building.";
 
 export async function generateMetadata(): Promise<Metadata> {
   const base = new URL(process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000");
