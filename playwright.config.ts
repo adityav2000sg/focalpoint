@@ -15,7 +15,7 @@ export default defineConfig({
     { name: "mobile", use: { ...devices["iPhone 14"], browserName: "chromium", channel: process.env.CI ? undefined : "chrome" } },
   ],
   webServer: {
-    command: "E2E_BYPASS_AUTH=1 npm run dev -- --hostname 127.0.0.1 --port 3100",
+    command: "E2E_BYPASS_AUTH=1 NEXT_PUBLIC_APPLE_AUTH_ENABLED=true npm run dev -- --hostname 127.0.0.1 --port 3100",
     url: "http://127.0.0.1:3100/login",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

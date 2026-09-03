@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Apple, ArrowRight, Leaf, LockKeyhole, Users } from "lucide-react";
 import { createBrowserSupabaseClient } from "@/lib/supabase/client";
 
-export default function LoginScreen({ configured, error, next = "/" }: { configured: boolean; error?: string; next?: string }) {
+export default function LoginScreen({ configured, appleEnabled, error, next = "/" }: { configured: boolean; appleEnabled: boolean; error?: string; next?: string }) {
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState(error || "");
 
@@ -46,17 +46,17 @@ export default function LoginScreen({ configured, error, next = "/" }: { configu
             {working ? "Opening Google…" : "Continue with Google"}
             <ArrowRight size={18} />
           </button>
-          <button className="apple-button" onClick={() => signIn("apple")} disabled={working}>
+          {appleEnabled && <button className="apple-button" onClick={() => signIn("apple")} disabled={working}>
             <Apple size={19} />
             Continue with Apple
             <ArrowRight size={18} />
-          </button>
+          </button>}
           </div>
         ) : (
           <div className="setup-message"><strong>Setup needed</strong><span>Add the Supabase variables in Netlify before opening the app.</span></div>
         )}
         {message && <p className="auth-error">{message}</p>}
-        <small className="auth-footnote">Lifetime never receives your Google or Apple password.</small>
+        <small className="auth-footnote">Lifetime never receives your {appleEnabled ? "Google or Apple" : "Google"} password.</small>
         <div className="auth-legal"><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/support">Support</a></div>
       </section>
     </main>

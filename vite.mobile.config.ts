@@ -13,6 +13,7 @@ export default defineConfig(({ mode }) => {
       __SUPABASE_URL__: JSON.stringify(env.NEXT_PUBLIC_SUPABASE_URL || ""),
       __SUPABASE_KEY__: JSON.stringify(env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY || ""),
       __SITE_URL__: JSON.stringify((env.NEXT_PUBLIC_SITE_URL || "https://myfocalpoint.netlify.app").replace(/\/$/, "")),
+      __APPLE_AUTH_ENABLED__: JSON.stringify(env.NEXT_PUBLIC_APPLE_AUTH_ENABLED === "true"),
     },
     build: {
       outDir: path.resolve(process.cwd(), "mobile-dist"),

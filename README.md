@@ -65,6 +65,7 @@ Copy `.env.example` to `.env.local` for local work. Configure the same values in
 NEXT_PUBLIC_SUPABASE_URL=https://YOUR_PROJECT.supabase.co
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
+NEXT_PUBLIC_APPLE_AUTH_ENABLED=false
 
 # Optional server-only AI configuration
 DASHSCOPE_API_KEY=
@@ -73,6 +74,8 @@ QWEN_MODEL=qwen3.6-flash
 QWEN_ASR_MODEL=qwen3-asr-flash
 QWEN_VISION_MODEL=qwen3-vl-flash
 ```
+
+Keep `NEXT_PUBLIC_APPLE_AUTH_ENABLED=false` until the Apple provider is actually enabled in Supabase; set it to `true` for the App Store build only after the real sign-in flow passes on a device. This prevents an unfinished provider from appearing as a broken production button.
 
 Use Node 22 or newer:
 

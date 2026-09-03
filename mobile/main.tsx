@@ -11,6 +11,7 @@ import "./mobile.css";
 declare const __SUPABASE_URL__: string;
 declare const __SUPABASE_KEY__: string;
 declare const __SITE_URL__: string;
+declare const __APPLE_AUTH_ENABLED__: boolean;
 
 const configured = Boolean(__SUPABASE_URL__ && __SUPABASE_KEY__ && !__SUPABASE_URL__.includes("your-project"));
 const supabase = configured ? createClient(__SUPABASE_URL__, __SUPABASE_KEY__, {
@@ -45,10 +46,10 @@ function NativeLogin() {
     <div className="auth-promises"><span><LockKeyhole size={17} /> Your personal records stay yours</span><span><Users size={17} /> Share only what you put in Together</span></div>
     {configured ? <div className="auth-buttons">
       <button className="google-button" onClick={() => void signIn("google")} disabled={Boolean(working)}><span className="google-mark">G</span>{working === "google" ? "Opening Google…" : "Continue with Google"}<ArrowRight size={18} /></button>
-      <button className="apple-button" onClick={() => void signIn("apple")} disabled={Boolean(working)}><Apple size={19} />{working === "apple" ? "Opening Apple…" : "Continue with Apple"}<ArrowRight size={18} /></button>
+      {__APPLE_AUTH_ENABLED__ && <button className="apple-button" onClick={() => void signIn("apple")} disabled={Boolean(working)}><Apple size={19} />{working === "apple" ? "Opening Apple…" : "Continue with Apple"}<ArrowRight size={18} /></button>}
     </div> : <div className="setup-message"><strong>Build setup needed</strong><span>Add the Supabase public URL and publishable key before creating the iOS build.</span></div>}
     {message && <p className="auth-error">{message}</p>}
-    <small className="auth-footnote">Lifetime never receives your Google or Apple password.</small>
+    <small className="auth-footnote">Lifetime never receives your {__APPLE_AUTH_ENABLED__ ? "Google or Apple" : "Google"} password.</small>
     <div className="auth-legal"><a href={`${__SITE_URL__}/privacy`} target="_blank" rel="noreferrer">Privacy</a><a href={`${__SITE_URL__}/terms`} target="_blank" rel="noreferrer">Terms</a><a href={`${__SITE_URL__}/support`} target="_blank" rel="noreferrer">Support</a></div>
   </section></main>;
 }
