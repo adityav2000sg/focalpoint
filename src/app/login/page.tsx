@@ -5,12 +5,14 @@ import { isSupabaseConfigured } from "@/lib/supabase/config";
 
 export const dynamic = "force-dynamic";
 
-export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string }> }) {
-  const configured = isSupabaseConfigured();
-  if (configured) {
-    const { user } = await getAuthenticatedUser();
-    if (user) redirect("/");
-  }
+export default async function LoginPage({ searchParams }: { searchParams: Promise<{ error?: string; next?: string }> }) {
   const params = await searchParams;
-  return <LoginScreen configured={configured} error={params.error} />;
+  const next = params.next?.startsWith("/") && !params.next.startsWith("//") ? params.next : "/";
+  const testing = process.env.E2E_BYPASS_AUTH === "1";
+  const configured = testing || isSupabaseConfigured();
+  if (configured && !testing) {
+    const { user } = await getAuthenticatedUser();
+    if (user) redirect(next);
+  }
+  return <LoginScreen configured={configured} error={params.error} next={next} />;
 }

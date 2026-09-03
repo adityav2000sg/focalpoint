@@ -3,6 +3,18 @@ import { NextResponse, type NextRequest } from "next/server";
 import { getSupabaseConfig, isSupabaseConfigured } from "@/lib/supabase/config";
 
 export async function proxy(request: NextRequest) {
+  if (request.method === "OPTIONS" && request.nextUrl.pathname.startsWith("/api/")) {
+    return new NextResponse(null, {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "capacitor://localhost",
+        "Access-Control-Allow-Headers": "Authorization, Content-Type",
+        "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+        "Access-Control-Max-Age": "86400",
+        Vary: "Origin",
+      },
+    });
+  }
   if (!isSupabaseConfigured()) return NextResponse.next({ request });
 
   const { url, publishableKey } = getSupabaseConfig();

@@ -29,6 +29,8 @@ export interface Transaction {
   space: SpaceId;
   note?: string;
   source: TransactionSource;
+  /** Historical statement rows can inform reports without re-applying them to a current balance. */
+  affectsBalance?: boolean;
 }
 
 export interface Goal {
@@ -86,6 +88,7 @@ export interface InboxItem {
   confidence: number;
   status: "review" | "approved" | "dismissed";
   reason: string;
+  affectsBalance?: boolean;
 }
 
 export interface FinanceData {
@@ -98,6 +101,7 @@ export interface FinanceData {
     householdStartedAt?: string;
     voiceLocale?: string;
     voiceLexicon?: string[];
+    aiEnabled?: boolean;
   };
   accounts: Account[];
   transactions: Transaction[];
@@ -155,6 +159,7 @@ export function createEmptyFinanceData({ name, householdName }: { name: string; 
       partnerEmail: "",
       voiceLocale: "en-SG",
       voiceLexicon: ["PayNow", "DBS", "CPF"],
+      aiEnabled: false,
     },
     accounts: [],
     transactions: [],
@@ -176,12 +181,12 @@ export function isFinanceData(input: unknown): input is FinanceData {
   const profile = candidate.profile;
   if (candidate.version !== 3 || !record(profile) || !text(profile.name) || !text(profile.partnerName) || !text(profile.householdName)) return false;
   if (!Array.isArray(candidate.accounts) || !candidate.accounts.every((item) => record(item) && text(item.id) && text(item.name) && text(item.institution) && text(item.type) && space(item.space) && text(item.owner) && amount(item.balance) && item.currency === "SGD")) return false;
-  if (!Array.isArray(candidate.transactions) || !candidate.transactions.every((item) => record(item) && text(item.id) && ["expense", "income", "transfer"].includes(String(item.type)) && amount(item.amount) && item.amount > 0 && text(item.date) && text(item.description) && text(item.category) && text(item.accountId) && space(item.space) && text(item.source))) return false;
+  if (!Array.isArray(candidate.transactions) || !candidate.transactions.every((item) => record(item) && text(item.id) && ["expense", "income", "transfer"].includes(String(item.type)) && amount(item.amount) && item.amount > 0 && text(item.date) && text(item.description) && text(item.category) && text(item.accountId) && space(item.space) && text(item.source) && (item.affectsBalance === undefined || typeof item.affectsBalance === "boolean"))) return false;
   if (!Array.isArray(candidate.goals) || !candidate.goals.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.target) && amount(item.current) && text(item.targetDate) && space(item.space) && text(item.icon))) return false;
   if (!Array.isArray(candidate.recurring) || !candidate.recurring.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.amount) && ["monthly", "quarterly", "yearly"].includes(String(item.cadence)) && text(item.nextDate) && text(item.accountId) && text(item.category) && space(item.space) && typeof item.active === "boolean")) return false;
   if (!Array.isArray(candidate.spendingPlans) || !candidate.spendingPlans.every((item) => record(item) && text(item.id) && text(item.category) && amount(item.monthlyLimit) && space(item.space))) return false;
   if (!Array.isArray(candidate.plannedEvents) || !candidate.plannedEvents.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.amount) && text(item.date) && text(item.kind) && space(item.space) && typeof item.includeInPlan === "boolean")) return false;
-  if (!Array.isArray(candidate.inbox) || !candidate.inbox.every((item) => record(item) && text(item.id) && text(item.description) && amount(item.amount) && text(item.date) && text(item.source) && ["expense", "income", "transfer"].includes(String(item.suggestedType)) && text(item.suggestedCategory) && space(item.space) && amount(item.confidence) && text(item.status) && text(item.reason))) return false;
+  if (!Array.isArray(candidate.inbox) || !candidate.inbox.every((item) => record(item) && text(item.id) && text(item.description) && amount(item.amount) && text(item.date) && text(item.source) && ["expense", "income", "transfer"].includes(String(item.suggestedType)) && text(item.suggestedCategory) && space(item.space) && amount(item.confidence) && text(item.status) && text(item.reason) && (item.affectsBalance === undefined || typeof item.affectsBalance === "boolean"))) return false;
   return true;
 }
 
@@ -205,9 +210,22 @@ export function monthlyEquivalent(item: RecurringItem) {
   return item.cadence === "monthly" ? item.amount : item.cadence === "quarterly" ? item.amount / 3 : item.amount / 12;
 }
 
+export function advanceRecurringDate(date: string, cadence: RecurringItem["cadence"]) {
+  const current = new Date(`${date}T12:00:00`);
+  const originalDay = current.getDate();
+  current.setDate(1);
+  if (cadence === "monthly") current.setMonth(current.getMonth() + 1);
+  if (cadence === "quarterly") current.setMonth(current.getMonth() + 3);
+  if (cadence === "yearly") current.setFullYear(current.getFullYear() + 1);
+  const lastDay = new Date(current.getFullYear(), current.getMonth() + 1, 0).getDate();
+  current.setDate(Math.min(originalDay, lastDay));
+  return current.toISOString().slice(0, 10);
+}
+
 // Applies a transaction to account balances. Pass direction -1 to reverse it,
 // which is how edits (reverse the old, apply the new) and deletes are handled.
 export function applyTransaction(accounts: Account[], transaction: Transaction, direction: 1 | -1 = 1) {
+  if (transaction.affectsBalance === false) return accounts;
   return accounts.map((account) => {
     if (transaction.type === "expense" && account.id === transaction.accountId) {
       return { ...account, balance: account.balance - transaction.amount * direction };

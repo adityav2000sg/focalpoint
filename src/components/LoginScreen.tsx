@@ -1,30 +1,30 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowRight, Leaf, LockKeyhole, Users } from "lucide-react";
+import { Apple, ArrowRight, Leaf, LockKeyhole, Users } from "lucide-react";
 import { createBrowserSupabaseClient } from "@/lib/supabase/client";
 
-export default function LoginScreen({ configured, error }: { configured: boolean; error?: string }) {
+export default function LoginScreen({ configured, error, next = "/" }: { configured: boolean; error?: string; next?: string }) {
   const [working, setWorking] = useState(false);
   const [message, setMessage] = useState(error || "");
 
-  async function signIn() {
+  async function signIn(provider: "google" | "apple") {
     if (!configured) return;
     setWorking(true);
     setMessage("");
     try {
       const supabase = createBrowserSupabaseClient();
       const { error: authError } = await supabase.auth.signInWithOAuth({
-        provider: "google",
+        provider,
         options: {
-          redirectTo: `${window.location.origin}/auth/callback`,
-          queryParams: { prompt: "select_account" },
+          redirectTo: `${window.location.origin}/auth/callback?next=${encodeURIComponent(next)}`,
+          queryParams: provider === "google" ? { prompt: "select_account" } : undefined,
         },
       });
       if (authError) throw authError;
     } catch (authError) {
       setWorking(false);
-      setMessage(authError instanceof Error ? authError.message : "Google sign-in could not start.");
+      setMessage(authError instanceof Error ? authError.message : "Sign-in could not start.");
     }
   }
 
@@ -40,16 +40,24 @@ export default function LoginScreen({ configured, error }: { configured: boolean
           <span><Users size={17} /> Share only what you put in Together</span>
         </div>
         {configured ? (
-          <button className="google-button" onClick={signIn} disabled={working}>
+          <div className="auth-buttons">
+          <button className="google-button" onClick={() => signIn("google")} disabled={working}>
             <span className="google-mark">G</span>
             {working ? "Opening Google…" : "Continue with Google"}
             <ArrowRight size={18} />
           </button>
+          <button className="apple-button" onClick={() => signIn("apple")} disabled={working}>
+            <Apple size={19} />
+            Continue with Apple
+            <ArrowRight size={18} />
+          </button>
+          </div>
         ) : (
           <div className="setup-message"><strong>Setup needed</strong><span>Add the Supabase variables in Netlify before opening the app.</span></div>
         )}
         {message && <p className="auth-error">{message}</p>}
-        <small className="auth-footnote">Lifetime never receives your Google password.</small>
+        <small className="auth-footnote">Lifetime never receives your Google or Apple password.</small>
+        <div className="auth-legal"><a href="/privacy">Privacy</a><a href="/terms">Terms</a><a href="/support">Support</a></div>
       </section>
     </main>
   );

@@ -1,8 +1,10 @@
 "use client";
 
 import { useEffect } from "react";
+import { Capacitor } from "@capacitor/core";
+import { Haptics, ImpactStyle } from "@capacitor/haptics";
 
-const interactiveSelector = "button, a[href], [role='button'], input, select, textarea, .file-button";
+const interactiveSelector = "button, a[href], [role='button'], .file-button, .editable-row";
 
 export default function InteractionMotion() {
   useEffect(() => {
@@ -20,8 +22,9 @@ export default function InteractionMotion() {
           { transform: "scale(1.006)", filter: "brightness(1.015)", offset: 0.72 },
           { transform: "scale(1)", filter: "brightness(1)" },
         ],
-        { duration: 640, easing: "cubic-bezier(.2,.75,.2,1)" },
+        { duration: 720, easing: "cubic-bezier(.2,.75,.2,1)" },
       );
+      if (Capacitor.isNativePlatform()) void Haptics.impact({ style: ImpactStyle.Light });
     }
 
     document.addEventListener("click", animateInteraction);

@@ -4,6 +4,7 @@ import {
   FinanceData,
   Transaction,
   applyTransaction,
+  advanceRecurringDate,
   buildForecast,
   createEmptyFinanceData,
   isFinanceData,
@@ -104,6 +105,13 @@ describe("transfers", () => {
 });
 
 describe("balance recomputation", () => {
+  it("does not apply imported statement history to a current balance", () => {
+    const accounts = [account("a", 1000)];
+    const imported = transaction({ id: "t-history", type: "expense", amount: 320.5, source: "sheet", affectsBalance: false });
+    expect(applyTransaction(accounts, imported)[0].balance).toBe(1000);
+    expect(applyTransaction(accounts, imported, -1)[0].balance).toBe(1000);
+  });
+
   it("restores the original balance after an edit", () => {
     const accounts = [account("a", 1000)];
     const original = transaction({ id: "t1", type: "expense", amount: 100 });
@@ -142,6 +150,17 @@ describe("balance recomputation", () => {
     const applied = applyTransaction(accounts, income);
     expect(applied[0].balance).toBe(3500);
     expect(applyTransaction(applied, income, -1)[0].balance).toBe(1000);
+  });
+});
+
+describe("recurring schedule advancement", () => {
+  it("keeps month-end payments at the end of a shorter month", () => {
+    expect(advanceRecurringDate("2026-01-31", "monthly")).toBe("2026-02-28");
+    expect(advanceRecurringDate("2026-01-31", "quarterly")).toBe("2026-04-30");
+  });
+
+  it("handles leap-day yearly payments", () => {
+    expect(advanceRecurringDate("2024-02-29", "yearly")).toBe("2025-02-28");
   });
 });
 

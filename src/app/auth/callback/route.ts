@@ -18,5 +18,5 @@ export async function GET(request: Request) {
     if (!error) return NextResponse.redirect(`${appOrigin}${safeNext(requestUrl.searchParams.get("next"))}`);
   }
 
-  return NextResponse.redirect(`${appOrigin}/login?error=Google%20sign-in%20could%20not%20be%20completed`);
+  return NextResponse.redirect(`${appOrigin}/login?error=Sign-in%20could%20not%20be%20completed`);
 }

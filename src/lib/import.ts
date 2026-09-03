@@ -48,14 +48,15 @@ export function isValidIsoDate(value: string) {
   return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
 }
 
-// Two rows are the same transaction when date, amount and description match.
-export function dedupeKey(date: string, amount: number, description: string) {
-  return `${date}|${amount.toFixed(2)}|${description.trim().toLowerCase()}`;
+// Account is part of the identity so the same purchase on two cards is not
+// silently discarded. The argument is optional for backwards compatibility.
+export function dedupeKey(date: string, amount: number, description: string, accountId = "") {
+  return `${date}|${amount.toFixed(2)}|${description.trim().toLowerCase()}|${accountId}`;
 }
 
 export function importTransactions(
   text: string,
-  { accounts, existing, scope }: { accounts: Account[]; existing: Transaction[]; scope: ViewScope },
+  { accounts, existing, scope, defaultAccountId }: { accounts: Account[]; existing: Transaction[]; scope: ViewScope; defaultAccountId?: string },
 ): ImportReport {
   const empty: ImportReport = { accepted: [], duplicates: 0, rejected: [] };
   const rows = parseCsv(text);
@@ -66,7 +67,7 @@ export function importTransactions(
   if (missing.length) return { ...empty, error: `The sheet is missing a ${missing.join(", ")} column.` };
   if (!accounts.length) return { ...empty, error: "Add an account before importing transactions." };
 
-  const seen = new Set(existing.map((item) => dedupeKey(item.date, item.amount, item.description)));
+  const seen = new Set(existing.map((item) => dedupeKey(item.date, item.amount, item.description, item.accountId)));
   const accepted: Transaction[] = [];
   const rejected: RejectedRow[] = [];
   let duplicates = 0;
@@ -105,11 +106,14 @@ export function importTransactions(
     if (row.account) {
       account = accounts.find((item) => item.name.toLowerCase() === row.account.toLowerCase());
       if (!account) { rejected.push({ line, reason: `No account named "${row.account}"` }); return; }
+    } else if (defaultAccountId || accounts.length) {
+      account = accounts.find((item) => item.id === defaultAccountId) || accounts[0];
     } else {
-      account = accounts[0];
+      rejected.push({ line, reason: "Account is required when more than one account exists" });
+      return;
     }
 
-    const key = dedupeKey(date, amount, description);
+    const key = dedupeKey(date, amount, description, account.id);
     if (seen.has(key)) { duplicates += 1; return; }
     seen.add(key);
 
@@ -123,6 +127,9 @@ export function importTransactions(
       accountId: account.id,
       space: account.space || ((scope === "all" ? "household" : "personal") as SpaceId),
       source: "sheet",
+      // Statement exports normally describe activity already reflected in the
+      // account's current balance. Users can opt into balance changes manually.
+      affectsBalance: false,
     });
   });
 

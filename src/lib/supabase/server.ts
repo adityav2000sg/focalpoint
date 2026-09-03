@@ -1,4 +1,5 @@
 import { createServerClient } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { getSupabaseConfig, isSupabaseConfigured } from "./config";
 
@@ -23,8 +24,19 @@ export async function createServerSupabaseClient() {
   });
 }
 
-export async function getAuthenticatedUser() {
+export async function getAuthenticatedUser(request?: Request) {
   if (!isSupabaseConfigured()) return { supabase: null, user: null };
+  const authorization = request?.headers.get("authorization");
+  if (authorization?.startsWith("Bearer ")) {
+    const token = authorization.slice(7).trim();
+    const { url, publishableKey } = getSupabaseConfig();
+    const supabase = createClient(url, publishableKey, {
+      global: { headers: { Authorization: `Bearer ${token}` } },
+      auth: { persistSession: false, autoRefreshToken: false, detectSessionInUrl: false },
+    });
+    const { data: { user }, error } = await supabase.auth.getUser(token);
+    return { supabase, user: error ? null : user };
+  }
   const supabase = await createServerSupabaseClient();
   const { data: { user }, error } = await supabase.auth.getUser();
   return { supabase, user: error ? null : user };

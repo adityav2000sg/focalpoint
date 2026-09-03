@@ -1,0 +1,8 @@
+@import "../src/app/globals.css";
+
+html, body, #root { min-height: 100%; }
+body { padding-top: env(safe-area-inset-top); }
+.native-auth-page { padding-top: max(14px, env(safe-area-inset-top)); padding-bottom: max(14px, env(safe-area-inset-bottom)); }
+.native-loading { min-height: 100svh; display: grid; place-content: center; justify-items: center; gap: 14px; color: #113b32; background: #f0f3ec; }
+.native-loading > span { width: 64px; height: 64px; display: grid; place-items: center; border-radius: 20px; background: linear-gradient(135deg,#d5f884,#9fe1c2); }
+.native-loading > strong { font-size: 18px; }

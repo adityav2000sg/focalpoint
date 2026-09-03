@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import InteractionMotion from "@/components/InteractionMotion";
+import ServiceWorkerRegistration from "@/components/ServiceWorkerRegistration";
 import "./globals.css";
 
 const siteTitle = "Lifetime — Finance for the life you’re building";
@@ -14,6 +15,10 @@ export async function generateMetadata(): Promise<Metadata> {
     description: siteDescription,
     applicationName: "Lifetime",
     manifest: "/manifest.webmanifest",
+    icons: {
+      icon: [{ url: "/icon-192.png", type: "image/png", sizes: "192x192" }, { url: "/icon.svg", type: "image/svg+xml" }],
+      apple: [{ url: "/apple-touch-icon.png", type: "image/png", sizes: "180x180" }],
+    },
     appleWebApp: {
       capable: true,
       statusBarStyle: "black-translucent",
@@ -41,7 +46,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en-SG">
-      <body><InteractionMotion />{children}</body>
+      <body><InteractionMotion /><ServiceWorkerRegistration />{children}</body>
     </html>
   );
 }

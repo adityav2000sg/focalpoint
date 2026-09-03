@@ -1,3 +1,7 @@
+import { getAuthenticatedUser } from "@/lib/supabase/server";
+import { checkAiAccess } from "@/lib/server/aiAccess";
+import { isTrustedMutation } from "@/lib/server/requestSecurity";
+
 type CoachPayload = {
   mode?: "coach" | "capture";
   prompt?: string;
@@ -11,16 +15,19 @@ function qwenConfig() {
   return { apiKey, baseUrl, model: process.env.QWEN_MODEL || "qwen3.6-flash" };
 }
 
-export async function GET() {
-  const { user } = await getAuthenticatedUser();
+export async function GET(request: Request) {
+  const { user } = await getAuthenticatedUser(request);
   if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
   const { apiKey, model } = qwenConfig();
   return Response.json({ configured: Boolean(apiKey), model });
 }
 
 export async function POST(request: Request) {
-  const { user } = await getAuthenticatedUser();
-  if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
+  if (!isTrustedMutation(request)) return Response.json({ error: "Cross-site request blocked" }, { status: 403 });
+  const { supabase, user } = await getAuthenticatedUser(request);
+  if (!supabase || !user) return Response.json({ error: "Sign in required" }, { status: 401 });
+  const access = await checkAiAccess(supabase, user, "coach");
+  if (!access.allowed) return Response.json({ error: access.message }, { status: access.message.startsWith("Hourly") ? 429 : 403 });
   const { apiKey, baseUrl, model } = qwenConfig();
   if (!apiKey) return Response.json({ error: "Qwen is not configured" }, { status: 503 });
   try {
@@ -59,4 +66,3 @@ export async function POST(request: Request) {
     return Response.json({ error: error instanceof Error ? error.message : "Qwen request failed" }, { status: 500 });
   }
 }
-import { getAuthenticatedUser } from "@/lib/supabase/server";

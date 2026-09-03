@@ -86,6 +86,13 @@ describe("dedupe", () => {
     expect(report.accepted).toHaveLength(1);
     expect(report.duplicates).toBe(1);
   });
+
+  it("keeps the same merchant, date and amount when it belongs to another account", () => {
+    const first = importTransactions("date,description,amount,type\n2026-08-14,Coffee,6.50,expense", { accounts, existing: [], scope: "all", defaultAccountId: "acc-everyday" });
+    const second = importTransactions("date,description,amount,type\n2026-08-14,Coffee,6.50,expense", { accounts, existing: first.accepted, scope: "all", defaultAccountId: "acc-joint" });
+    expect(second.accepted).toHaveLength(1);
+    expect(second.accepted[0].accountId).toBe("acc-joint");
+  });
 });
 
 describe("import report", () => {
@@ -131,6 +138,7 @@ describe("row mapping", () => {
     const report = run("date,description,amount,type,account\n2026-08-14,Groceries,60,expense,Joint");
     expect(report.accepted[0].accountId).toBe("acc-joint");
     expect(report.accepted[0].space).toBe("household");
+    expect(report.accepted[0].affectsBalance).toBe(false);
   });
 
   it("infers expense from a negative amount when type is blank", () => {

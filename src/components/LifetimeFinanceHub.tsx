@@ -62,6 +62,7 @@ import {
   TransactionType,
   ViewScope,
   accountTypeLabels,
+  advanceRecurringDate,
   applyTransaction,
   buildForecast,
   categoryColors,
@@ -78,10 +79,11 @@ import {
 } from "@/lib/finance";
 import { ImportReport, describeImport, importTransactions } from "@/lib/import";
 import { hasTogetherAccess, type TogetherMember } from "@/lib/together";
+import { mergeFinanceWorkspaces } from "@/lib/sync";
 
 type ViewId = "today" | "money" | "future" | "coach" | "together";
 type MoneySection = "snapshot" | "activity" | "accounts" | "inbox" | "plan";
-type ModalId = "capture" | "transaction" | "account" | "goal" | "event" | "recurring" | "import" | "household" | null;
+type ModalId = "capture" | "transaction" | "account" | "goal" | "event" | "recurring" | "import" | "household" | "settings" | null;
 type ActivityMode = "feed" | "ledger";
 type ActivityFilter = "all" | TransactionType;
 type ActivityPeriod = "month" | "all";
@@ -110,6 +112,20 @@ type Viewer = {
   email: string;
 };
 
+type WorkspaceRevisions = { personal: number | null; household: number | null };
+
+type RecoveryEntry = {
+  id: number;
+  scope: "personal" | "household";
+  revision: number;
+  summary: string;
+  createdAt: string;
+};
+
+type ApiRequest = (path: string, init?: RequestInit) => Promise<Response>;
+const LifetimeApiContext = React.createContext<{ request: ApiRequest; publicBaseUrl: string }>({ request: (path, init) => fetch(path, init), publicBaseUrl: "" });
+function useLifetimeApi() { return React.useContext(LifetimeApiContext); }
+
 type Confirmation = {
   title: string;
   copy: string;
@@ -124,7 +140,7 @@ function createViewerSeed(viewer: Viewer) {
   return createEmptyFinanceData({ name: displayName, householdName: `${firstName}’s Together` });
 }
 
-export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Viewer; signOutPath: string }) {
+export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "", accessToken, onSignOut, publicBaseUrl = "" }: { viewer: Viewer; signOutPath?: string; apiBaseUrl?: string; accessToken?: string; onSignOut?: () => void | Promise<void>; publicBaseUrl?: string }) {
   const [data, setData] = useState<FinanceData>(() => createViewerSeed(viewer));
   const [scope, setScope] = useState<ViewScope>("personal");
   const [activeView, setActiveView] = useState<ViewId>("today");
@@ -145,14 +161,35 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   const [editingGoal, setEditingGoal] = useState<Goal | null>(null);
   const [editingEvent, setEditingEvent] = useState<PlannedEvent | null>(null);
   const [editingRecurring, setEditingRecurring] = useState<RecurringItem | null>(null);
+  const [editingInbox, setEditingInbox] = useState<InboxItem | null>(null);
   const [confirmation, setConfirmation] = useState<Confirmation | null>(null);
   const [afterAccount, setAfterAccount] = useState<"transaction" | "import" | "recurring" | null>(null);
   const [hydrated, setHydrated] = useState(false);
   const [syncStatus, setSyncStatus] = useState<"loading" | "saving" | "saved" | "offline">("loading");
   const [householdMembers, setHouseholdMembers] = useState<TogetherMember[]>([]);
   const [qwenConfigured, setQwenConfigured] = useState(false);
+  const [inviteUrl, setInviteUrl] = useState<string | null>(null);
+  const [revisions, setRevisions] = useState<WorkspaceRevisions>({ personal: null, household: null });
   const loaded = useRef(false);
+  const latestData = useRef(data);
+  const lastSyncedData = useRef(data);
+  const latestRevisions = useRef(revisions);
+  const saveInFlight = useRef(false);
+  const savePending = useRef(false);
   const storageKey = `lifetimeFinanceDataV3:${viewer.userId}`;
+  const accessTokenRef = useRef(accessToken);
+  accessTokenRef.current = accessToken;
+  const apiRequest = React.useCallback<ApiRequest>((path, init = {}) => {
+    const headers = new Headers(init.headers);
+    if (accessTokenRef.current) headers.set("Authorization", `Bearer ${accessTokenRef.current}`);
+    const base = apiBaseUrl.replace(/\/$/, "");
+    return fetch(base && path.startsWith("/") ? `${base}${path}` : path, { ...init, headers });
+  }, [apiBaseUrl]);
+  const apiContext = useMemo(() => ({ request: apiRequest, publicBaseUrl }), [apiRequest, publicBaseUrl]);
+  const returnToLogin = React.useCallback(() => {
+    if (onSignOut) { void onSignOut(); return; }
+    window.location.assign("/login");
+  }, [onSignOut]);
   const hasTogether = hasTogetherAccess(data.profile, householdMembers, viewer.email);
   const navItems = hasTogether ? [...baseNavItems, { id: "together" as const, label: "Together", icon: Users }] : baseNavItems;
   const scopeOptions = hasTogether ? [personalScopeOption, togetherScopeOption] : [personalScopeOption];
@@ -162,18 +199,23 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     const defaults = createViewerSeed(viewer);
     async function hydrate() {
       try {
-        const response = await fetch("/api/finance", { cache: "no-store" });
-        if (response.status === 401) { window.location.assign("/login"); return; }
+        const response = await apiRequest("/api/finance", { cache: "no-store" });
+        if (response.status === 401) { returnToLogin(); return; }
         if (!response.ok) throw new Error("cloud unavailable");
-        const payload = await response.json() as { data?: Partial<FinanceData> | null; members?: typeof householdMembers };
+        const payload = await response.json() as { data?: Partial<FinanceData> | null; members?: typeof householdMembers; revisions?: WorkspaceRevisions; inviteUrl?: string | null };
         if (cancelled) return;
-        setData(payload.data ? normalizeFinanceData(payload.data, defaults) : defaults);
+        const hydratedData = payload.data ? normalizeFinanceData(payload.data, defaults) : defaults;
+        setData(hydratedData);
+        latestData.current = hydratedData;
+        lastSyncedData.current = hydratedData;
         setHouseholdMembers(payload.members || []);
+        if (payload.revisions) { setRevisions(payload.revisions); latestRevisions.current = payload.revisions; }
+        setInviteUrl(payload.inviteUrl || null);
         setSyncStatus("saved");
       } catch {
         const saved = window.localStorage.getItem(storageKey) || window.localStorage.getItem(`lifetimeFinanceDataV2:${viewer.userId}`);
         if (saved) {
-          try { setData(normalizeFinanceData(JSON.parse(saved) as Partial<FinanceData>, defaults)); }
+          try { const local = normalizeFinanceData(JSON.parse(saved) as Partial<FinanceData>, defaults); setData(local); latestData.current = local; }
           catch { setData(defaults); }
         } else setData(defaults);
         setSyncStatus("offline");
@@ -186,29 +228,76 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     }
     hydrate();
     return () => { cancelled = true; };
-  }, [storageKey, viewer]);
+  }, [apiRequest, returnToLogin, storageKey, viewer]);
+
+  useEffect(() => { latestRevisions.current = revisions; }, [revisions]);
+
+  async function persistWorkspace(): Promise<string | null | undefined> {
+    if (saveInFlight.current) { savePending.current = true; return undefined; }
+    saveInFlight.current = true;
+    savePending.current = false;
+    const snapshot = latestData.current;
+    const base = lastSyncedData.current;
+    try {
+      const response = await apiRequest("/api/finance", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: snapshot, revisions: latestRevisions.current, summary: "Finance workspace updated" }),
+      });
+      if (response.status === 401) { returnToLogin(); return undefined; }
+      const payload = await response.json() as { data?: Partial<FinanceData>; members?: typeof householdMembers; revisions?: WorkspaceRevisions; inviteUrl?: string | null; conflict?: boolean };
+      if (response.status === 409 && payload.conflict && payload.data && payload.revisions) {
+        const remote = normalizeFinanceData(payload.data, createViewerSeed(viewer));
+        const merged = mergeFinanceWorkspaces(base, latestData.current, remote);
+        lastSyncedData.current = remote;
+        latestRevisions.current = payload.revisions;
+        setRevisions(payload.revisions);
+        latestData.current = merged;
+        setData(merged);
+        savePending.current = true;
+        notify("Changes from another device were merged safely.");
+        return undefined;
+      }
+      if (!response.ok) throw new Error("save failed");
+      lastSyncedData.current = snapshot;
+      if (payload.revisions) { latestRevisions.current = payload.revisions; setRevisions(payload.revisions); }
+      if (payload.members) setHouseholdMembers(payload.members);
+      if (payload.inviteUrl !== undefined) setInviteUrl(payload.inviteUrl);
+      setSyncStatus("saved");
+      return payload.inviteUrl ?? null;
+    } catch {
+      setSyncStatus("offline");
+      savePending.current = true;
+      return undefined;
+    } finally {
+      saveInFlight.current = false;
+      if (savePending.current && navigator.onLine) window.setTimeout(() => persistWorkspace(), 80);
+    }
+  }
 
   useEffect(() => {
     if (!loaded.current || !hydrated) return;
+    latestData.current = data;
     window.localStorage.setItem(storageKey, JSON.stringify(data));
+    savePending.current = true;
     setSyncStatus((current) => current === "offline" ? "offline" : "saving");
-    const timer = window.setTimeout(async () => {
-      try {
-        const response = await fetch("/api/finance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
-        if (response.status === 401) { window.location.assign("/login"); return; }
-        if (!response.ok) throw new Error("save failed");
-        const payload = await response.json() as { members?: typeof householdMembers };
-        if (payload.members) setHouseholdMembers(payload.members);
-        setSyncStatus("saved");
-      } catch { setSyncStatus("offline"); }
-    }, 650);
+    const timer = window.setTimeout(() => persistWorkspace(), 700);
     return () => window.clearTimeout(timer);
+    // persistWorkspace intentionally reads refs so rapid edits form one save queue.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, hydrated, storageKey]);
 
   useEffect(() => {
-    fetch("/api/coach", { cache: "no-store" }).then((response) => response.ok ? response.json() : null)
-      .then((payload: { configured?: boolean } | null) => setQwenConfigured(Boolean(payload?.configured))).catch(() => undefined);
+    const retry = () => { if (loaded.current && savePending.current) { setSyncStatus("saving"); void persistWorkspace(); } };
+    window.addEventListener("online", retry);
+    return () => window.removeEventListener("online", retry);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    apiRequest("/api/coach", { cache: "no-store" }).then((response) => response.ok ? response.json() : null)
+      .then((payload: { configured?: boolean } | null) => setQwenConfigured(Boolean(payload?.configured))).catch(() => undefined);
+  }, [apiRequest]);
 
   useEffect(() => {
     if (!toast) return;
@@ -253,7 +342,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     .filter((transaction) => transaction.type === "expense")
     .reduce((sum, transaction) => sum + transaction.amount, 0);
   const monthCashFlow = monthIncome - monthSpending;
-  const savingsRate = monthIncome > 0 ? Math.max(0, (monthCashFlow / monthIncome) * 100) : 0;
+  const savingsRate = monthIncome > 0 ? (monthCashFlow / monthIncome) * 100 : 0;
   const activeRecurringCost = scopedRecurring
     .filter((item) => item.active)
     .reduce((sum, item) => sum + monthlyEquivalent(item), 0);
@@ -304,6 +393,13 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     setModal("transaction");
   }
 
+  function editInboxItem(item: InboxItem) {
+    setEditingInbox(item);
+    setEditingTransaction(null);
+    setCaptureDraft({ id: uid("tx"), type: item.suggestedType, amount: item.amount, date: item.date, description: item.description, category: item.suggestedCategory, accountId: item.suggestedAccountId, space: item.space, source: item.source === "sheet" ? "sheet" : "receipt", affectsBalance: item.affectsBalance });
+    setModal("transaction");
+  }
+
   function saveTransaction(transaction: Transaction) {
     setData((current) => {
       if (editingTransaction) {
@@ -318,10 +414,12 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
         ...current,
         accounts: applyTransaction(current.accounts, transaction),
         transactions: [transaction, ...current.transactions],
+        inbox: editingInbox ? current.inbox.filter((item) => item.id !== editingInbox.id) : current.inbox,
       };
     });
     setModal(null);
     setEditingTransaction(null);
+    setEditingInbox(null);
     notify(editingTransaction ? "Transaction updated and balances recalculated." : transaction.type === "transfer" ? "Transfer recorded — spending stayed unchanged." : "Transaction added.");
   }
 
@@ -406,30 +504,25 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
 
   async function saveHousehold(profile: FinanceData["profile"], prepareEmail = false) {
     const nextData = { ...data, profile };
+    latestData.current = nextData;
     setData(nextData);
     setScope("all");
     setModal(null);
     if (prepareEmail && profile.partnerEmail) {
       setSyncStatus("saving");
-      try {
-        const response = await fetch("/api/finance", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(nextData) });
-        if (!response.ok) throw new Error("invite save failed");
-        const payload = await response.json() as { members?: typeof householdMembers };
-        if (payload.members) setHouseholdMembers(payload.members);
-        setSyncStatus("saved");
-      } catch {
-        setSyncStatus("offline");
+      const savedInviteUrl = await persistWorkspace();
+      if (savedInviteUrl === undefined) {
         notify("The invite is saved on this device, but cloud sync failed. Reconnect before sending it.");
         return;
       }
-      const loginUrl = `${window.location.origin}/login`;
+      const loginUrl = savedInviteUrl || inviteUrl || `${window.location.origin}/login`;
       const subject = `Join ${profile.householdName} on Lifetime`;
-      const body = `${profile.name} invited you to share a Together space on Lifetime.\n\nSign in with ${profile.partnerEmail} here:\n${loginUrl}\n\nOnly finances deliberately marked “Shared in Together” are visible to both people. Your Personal space remains private.`;
+      const body = `${profile.name} invited you to share a Together space on Lifetime.\n\nOpen this secure invitation using ${profile.partnerEmail}:\n${loginUrl}\n\nOnly finances deliberately marked “Shared in Together” are visible to both people. Your Personal space remains private.`;
       window.location.href = `mailto:${encodeURIComponent(profile.partnerEmail)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
       notify("Invite saved. Your email app has a ready-to-send message.");
       return;
     }
-    notify("Together setup saved. They can join by signing in with the invited Google email.");
+    notify("Together setup saved. They can join with the invited sign-in email.");
   }
 
   function shiftSelectedMonth(offset: number) {
@@ -464,6 +557,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
       confidence: 0.9,
       status: "review",
       reason: "Imported row matched an account and is ready for your approval.",
+      affectsBalance: transaction.affectsBalance,
     }));
     setData((current) => ({ ...current, inbox: [...staged, ...current.inbox] }));
     setModal(null);
@@ -478,6 +572,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     const transaction: Transaction = {
       id: uid("tx"), type: item.suggestedType, amount: item.amount, date: item.date, description: item.description,
       category: item.suggestedCategory, accountId: account.id, space: account.space, source: item.source === "receipt" || item.source === "screenshot" ? "receipt" : item.source,
+      affectsBalance: item.affectsBalance,
     };
     setData((current) => ({ ...current, accounts: applyTransaction(current.accounts, transaction), transactions: [transaction, ...current.transactions], inbox: current.inbox.filter((candidate) => candidate.id !== item.id) }));
     notify("Inbox item approved and added to the ledger.");
@@ -595,6 +690,19 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     notify(item?.active ? "Recurring payment paused." : "Recurring payment resumed.");
   }
 
+  function postRecurring(item: RecurringItem) {
+    const account = data.accounts.find((candidate) => candidate.id === item.accountId);
+    if (!account) { notify("Choose a valid account before marking this as paid."); return; }
+    const transaction: Transaction = { id: uid("tx"), type: "expense", amount: item.amount, date: todayIso(), description: item.name, category: item.category, accountId: item.accountId, space: account.space, source: "recurring", affectsBalance: true };
+    setData((current) => ({
+      ...current,
+      accounts: applyTransaction(current.accounts, transaction),
+      transactions: [transaction, ...current.transactions],
+      recurring: current.recurring.map((candidate) => candidate.id === item.id ? { ...candidate, nextDate: advanceRecurringDate(candidate.nextDate, candidate.cadence) } : candidate),
+    }));
+    notify(`${item.name} was added to the ledger and its next date advanced.`);
+  }
+
   function togglePlannedEvent(id: string) {
     const item = data.plannedEvents.find((candidate) => candidate.id === id);
     setData((current) => ({ ...current, plannedEvents: current.plannedEvents.map((event) => event.id === id ? { ...event, includeInPlan: !event.includeInPlan } : event) }));
@@ -633,6 +741,80 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
     } });
   }
 
+  async function manageTogether(action: "revoke" | "leave" | "close", email?: string) {
+    const response = await apiRequest("/api/together", { method: "DELETE", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, email }) });
+    const payload = await response.json().catch(() => ({})) as { error?: string };
+    if (!response.ok) { notify(payload.error || "Together could not be updated."); return; }
+    if (action === "revoke" && email) {
+      setHouseholdMembers((current) => current.filter((member) => member.email.toLowerCase() !== email.toLowerCase()));
+      setData((current) => ({ ...current, profile: { ...current.profile, partnerEmail: "", partnerName: "Partner" } }));
+      setModal(null);
+      notify("Access removed. You can send a new invitation whenever you’re ready.");
+      return;
+    }
+    setData((current) => ({
+      ...current,
+      profile: { ...current.profile, partnerEmail: "", partnerName: "Partner", householdStartedAt: undefined },
+      accounts: current.accounts.filter((item) => item.space === "personal"),
+      transactions: current.transactions.filter((item) => item.space === "personal"),
+      goals: current.goals.filter((item) => item.space === "personal"),
+      recurring: current.recurring.filter((item) => item.space === "personal"),
+      spendingPlans: current.spendingPlans.filter((item) => item.space === "personal"),
+      plannedEvents: current.plannedEvents.filter((item) => item.space === "personal"),
+      inbox: current.inbox.filter((item) => item.space === "personal"),
+    }));
+    setHouseholdMembers([]); setInviteUrl(null); setScope("personal"); setActiveView("today"); setModal(null);
+    notify(action === "leave" ? "You left Together. Your Personal records remain." : "Together was closed and its shared records were removed.");
+  }
+
+  function confirmTogetherAction(action: "revoke" | "leave" | "close", email?: string) {
+    const memberName = householdMembers.find((member) => member.email.toLowerCase() === email?.toLowerCase())?.display_name || email;
+    setConfirmation({
+      title: action === "revoke" ? `Remove ${memberName || "this member"}?` : action === "leave" ? "Leave Together?" : "Close Together?",
+      copy: action === "revoke" ? "They will immediately lose access to shared records. Your Personal records remain private." : action === "leave" ? "Shared records will disappear from your workspace. Your Personal records stay with you." : "This permanently removes the Together space and all records shared inside it. Personal records remain.",
+      actionLabel: action === "revoke" ? "Remove access" : action === "leave" ? "Leave Together" : "Close Together",
+      onConfirm: () => { void manageTogether(action, email); },
+    });
+  }
+
+  function requestAccountDeletion() {
+    setModal(null);
+    setConfirmation({
+      title: "Permanently delete your Lifetime account?",
+      copy: "This removes your sign-in and finance data owned by you. This cannot be undone. Export a backup first if you need one.",
+      actionLabel: "Delete my account",
+      onConfirm: () => {
+        void apiRequest("/api/account", { method: "DELETE" }).then(async (response) => {
+          const payload = await response.json().catch(() => ({})) as { error?: string };
+          if (!response.ok) { notify(payload.error || "Your account could not be deleted."); return; }
+          window.localStorage.removeItem(storageKey);
+          returnToLogin();
+        });
+      },
+    });
+  }
+
+  function requestVersionRestore(entry: RecoveryEntry) {
+    setModal(null);
+    setConfirmation({
+      title: `Restore this ${entry.scope === "household" ? "Together" : "Personal"} version?`,
+      copy: `Lifetime will return that space to its saved state from ${new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(entry.createdAt))}. A new recovery point is created, so this action remains reversible.`,
+      actionLabel: "Restore version",
+      onConfirm: () => {
+        void apiRequest("/api/history", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ historyId: entry.id }),
+        }).then(async (response) => {
+          const payload = await response.json().catch(() => ({})) as { error?: string };
+          if (!response.ok) { notify(payload.error || "That version could not be restored."); return; }
+          window.localStorage.removeItem(storageKey);
+          window.location.reload();
+        });
+      },
+    });
+  }
+
   function navigateTo(view: ViewId, section?: MoneySection) {
     if (section) setMoneySection(section);
     if (view === "together") setScope("all");
@@ -643,7 +825,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
   if (!hydrated) return <AppLoading displayName={viewer.displayName} />;
 
   return (
-    <div className="app-shell">
+    <LifetimeApiContext.Provider value={apiContext}><div className="app-shell">
       <aside className={`sidebar ${mobileMenu ? "sidebar-open" : ""}`}>
         <div className="brand-lockup">
           <span className="brand-mark"><Leaf size={20} strokeWidth={2.4} /></span>
@@ -677,15 +859,15 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
           <p className="eyebrow">Monthly signal</p>
           <strong>{monthTransactions.length ? `${savingsRate.toFixed(0)}% savings rate` : "No signal yet"}</strong>
           <span>{monthTransactions.length ? `You kept ${formatMoney(monthCashFlow)} this month.` : "Add income and spending to build a monthly signal."}</span>
-          <div className="mini-progress"><i style={{ width: `${Math.min(savingsRate, 100)}%` }} /></div>
+          <div className="mini-progress"><i style={{ width: `${Math.max(0, Math.min(savingsRate, 100))}%` }} /></div>
         </div>
 
         <div className="profile-chip">
           <span className="avatar">{data.profile.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span>
           <div><strong>{data.profile.name}</strong><small>{viewer.email}</small></div>
           <div className="profile-actions">
-            <button className="signout-button" onClick={() => { setModal("household"); setMobileMenu(false); }} aria-label="Together settings" title="Together settings"><Settings2 size={17} /></button>
-            <form action={signOutPath} method="post"><button className="signout-button" type="submit" aria-label="Sign out" title="Sign out"><LogOut size={17} /></button></form>
+            <button className="signout-button" onClick={() => { setModal("settings"); setMobileMenu(false); }} aria-label="Settings" title="Settings"><Settings2 size={17} /></button>
+            {onSignOut ? <button className="signout-button" type="button" onClick={() => void onSignOut()} aria-label="Sign out" title="Sign out"><LogOut size={17} /></button> : <form action={signOutPath || "/auth/signout"} method="post"><button className="signout-button" type="submit" aria-label="Sign out" title="Sign out"><LogOut size={17} /></button></form>}
           </div>
         </div>
       </aside>
@@ -781,6 +963,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               onImport={openImport}
               onApproveInbox={approveInbox}
               onDismissInbox={dismissInbox}
+              onEditInbox={editInboxItem}
               onDelete={deleteTransaction}
               onEditTransaction={openEditTransaction}
               onAddAccount={openNewAccount}
@@ -815,6 +998,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
               onAddEvent={openNewEvent}
               onAddRecurring={openNewRecurring}
               onToggleRecurring={toggleRecurring}
+              onPostRecurring={postRecurring}
               onEditGoal={openEditGoal}
               onEditEvent={openEditEvent}
               onEditRecurring={openEditRecurring}
@@ -852,18 +1036,19 @@ export default function LifetimeFinanceHub({ viewer, signOutPath }: { viewer: Vi
       <button className="mobile-fab voice-fab" onClick={() => setModal("capture")} aria-label="Capture with voice or text"><Mic size={24} /></button>
 
       {modal === "capture" && <CaptureModal accounts={data.accounts} profile={data.profile} scope={scope} qwenConfigured={qwenConfigured} onClose={() => setModal(null)} onTransaction={(draft) => openCaptureDraft(draft)} onPlan={(event) => savePlannedEvent(event)} onAsk={(prompt) => { setModal(null); setActiveView("coach"); window.setTimeout(() => window.dispatchEvent(new CustomEvent("lifetime-coach-question", { detail: prompt })), 100); }} onProfile={(profile) => setData((current) => ({ ...current, profile }))} />}
-      {modal === "transaction" && <TransactionModal initial={editingTransaction || captureDraft} accounts={data.accounts} scope={scope} onNeedAccount={() => openRequiredAccount("transaction")} onClose={() => { setModal(null); setEditingTransaction(null); setCaptureDraft(null); }} onSubmit={saveTransaction} />}
+      {modal === "transaction" && <TransactionModal initial={editingTransaction || captureDraft} accounts={data.accounts} scope={scope} onNeedAccount={() => openRequiredAccount("transaction")} onClose={() => { setModal(null); setEditingTransaction(null); setEditingInbox(null); setCaptureDraft(null); }} onSubmit={saveTransaction} onDelete={editingTransaction ? () => deleteTransaction(editingTransaction) : undefined} />}
       {modal === "account" && <AccountModal initial={editingAccount} scope={scope} canShare={hasTogether} profileName={data.profile.name} partnerName={data.profile.partnerName} onClose={() => { setModal(null); setEditingAccount(null); setAfterAccount(null); setCaptureDraft(null); }} onSubmit={saveAccount} onDelete={editingAccount ? () => deleteAccount(editingAccount) : undefined} />}
       {modal === "goal" && <GoalModal initial={editingGoal} scope={scope} canShare={hasTogether} onClose={() => { setModal(null); setEditingGoal(null); }} onSubmit={saveGoal} onDelete={editingGoal ? () => deleteGoal(editingGoal) : undefined} />}
       {modal === "event" && <PlannedEventModal initial={editingEvent} scope={scope} canShare={hasTogether} onClose={() => { setModal(null); setEditingEvent(null); }} onSubmit={savePlannedEvent} onDelete={editingEvent ? () => deletePlannedEvent(editingEvent) : undefined} />}
       {modal === "recurring" && <RecurringModal initial={editingRecurring} scope={scope} accounts={data.accounts} onNeedAccount={() => openRequiredAccount("recurring")} onClose={() => { setModal(null); setEditingRecurring(null); }} onSubmit={saveRecurring} onDelete={editingRecurring ? () => deleteRecurring(editingRecurring) : undefined} />}
       {modal === "import" && <ImportModal data={data} scope={scope} onNeedAccount={() => openRequiredAccount("import")} onClose={() => setModal(null)} setData={setData} onStage={stageInbox} notify={notify} />}
-      {modal === "household" && <HouseholdModal profile={data.profile} members={householdMembers} viewerEmail={viewer.email} onClose={() => setModal(null)} onSubmit={saveHousehold} />}
+      {modal === "household" && <HouseholdModal profile={data.profile} members={householdMembers} viewerEmail={viewer.email} inviteUrl={inviteUrl} onClose={() => setModal(null)} onSubmit={saveHousehold} onManage={confirmTogetherAction} notify={notify} />}
+      {modal === "settings" && <SettingsModal profile={data.profile} hasTogether={hasTogether} onClose={() => setModal(null)} onProfile={(profile) => setData((current) => ({ ...current, profile }))} onTogether={() => setModal("household")} onExport={exportData} onRestore={restoreBackup} onRestoreVersion={requestVersionRestore} onClear={() => { setModal(null); clearWorkspace(); }} onDeleteAccount={requestAccountDeletion} />}
 
       {confirmation && <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} onConfirm={() => { const action = confirmation.onConfirm; setConfirmation(null); action(); }} />}
 
       {toast && <div className="toast"><Check size={17} />{toast}</div>}
-    </div>
+    </div></LifetimeApiContext.Provider>
   );
 }
 
@@ -961,7 +1146,7 @@ function Overview({
   const firstName = profileName.split(" ")[0];
   const scopeCopy = scope === "all" ? "the money you manage alone and together" : "your personal foundation";
   const goal = goals[0];
-  const hasEvidence = accounts.length > 0 || transactions.length > 0;
+  const hasEvidence = forecast.historyMonths > 0;
 
   return (
     <div className="page-stack">
@@ -1084,7 +1269,7 @@ function Overview({
   );
 }
 
-function MoneyView({ section, setSection, accounts, allAccounts, transactions, monthTransactions, plans, inbox, netWorth, monthIncome, monthSpending, search, setSearch, onAdd, onImport, onApproveInbox, onDismissInbox, onDelete, onEditTransaction, onAddAccount, onEditAccount, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod, onSavePlan, onExport, onRestore, onReset, scope }: {
+function MoneyView({ section, setSection, accounts, allAccounts, transactions, monthTransactions, plans, inbox, netWorth, monthIncome, monthSpending, search, setSearch, onAdd, onImport, onApproveInbox, onDismissInbox, onEditInbox, onDelete, onEditTransaction, onAddAccount, onEditAccount, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod, onSavePlan, onExport, onRestore, onReset, scope }: {
   section: MoneySection;
   setSection: (section: MoneySection) => void;
   accounts: Account[];
@@ -1102,6 +1287,7 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
   onImport: () => void;
   onApproveInbox: (item: InboxItem) => void;
   onDismissInbox: (item: InboxItem) => void;
+  onEditInbox: (item: InboxItem) => void;
   onDelete: (transaction: Transaction) => void;
   onEditTransaction: (transaction: Transaction) => void;
   onAddAccount: () => void;
@@ -1167,20 +1353,20 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
 
       {section === "activity" && <ActivityView transactions={transactions} accounts={allAccounts} search={search} setSearch={setSearch} onAdd={onAdd} onImport={onImport} onDelete={onDelete} onEdit={onEditTransaction} selectedMonthLabel={selectedMonthLabel} selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} shiftMonth={shiftMonth} mode={mode} setMode={setMode} filter={filter} setFilter={setFilter} period={period} setPeriod={setPeriod} />}
       {section === "accounts" && <AccountsView accounts={accounts} netWorth={netWorth} onAdd={onAddAccount} onEdit={onEditAccount} />}
-      {section === "inbox" && <InboxView inbox={inbox} accounts={allAccounts} onImport={onImport} onApprove={onApproveInbox} onDismiss={onDismissInbox} />}
+      {section === "inbox" && <InboxView inbox={inbox} accounts={allAccounts} onImport={onImport} onApprove={onApproveInbox} onDismiss={onDismissInbox} onEdit={onEditInbox} />}
       {section === "plan" && <section className="panel plan-editor-panel"><PanelHeading eyebrow="A plan, not a punishment" title="Monthly spending boundaries" /><SpendingPlanList plans={plans} transactions={monthTransactions} onSave={onSavePlan} scope={scope} /></section>}
     </div>
   );
 }
 
-function InboxView({ inbox, accounts, onImport, onApprove, onDismiss }: { inbox: InboxItem[]; accounts: Account[]; onImport: () => void; onApprove: (item: InboxItem) => void; onDismiss: (item: InboxItem) => void }) {
+function InboxView({ inbox, accounts, onImport, onApprove, onDismiss, onEdit }: { inbox: InboxItem[]; accounts: Account[]; onImport: () => void; onApprove: (item: InboxItem) => void; onDismiss: (item: InboxItem) => void; onEdit: (item: InboxItem) => void }) {
   return (
     <div className="page-stack">
       <PageHeading eyebrow="Human in the loop" title="Review inbox" copy="Imported money waits here until you approve it. Nothing changes a balance silently.">
         <button className="primary-button" onClick={onImport}><Upload size={17} /> Bring in transactions</button>
       </PageHeading>
       <section className="panel inbox-panel">
-        <div className="inbox-intro"><span className="inbox-source"><ShieldCheck size={20} /></span><div><strong>{inbox.length ? `${inbox.length} item${inbox.length === 1 ? "" : "s"} waiting for you` : "Your review inbox is clear"}</strong><p>Approve adds the item to the ledger and updates its account balance. Dismiss removes it without touching your finances.</p></div></div>
+        <div className="inbox-intro"><span className="inbox-source"><ShieldCheck size={20} /></span><div><strong>{inbox.length ? `${inbox.length} item${inbox.length === 1 ? "" : "s"} waiting for you` : "Your review inbox is clear"}</strong><p>Approve adds the item to the ledger. Statement history leaves a current balance unchanged; new receipts update it. Dismiss never touches your finances.</p></div></div>
         <div className="inbox-list">
           {inbox.map((item) => {
             const account = accounts.find((candidate) => candidate.id === item.suggestedAccountId);
@@ -1189,7 +1375,7 @@ function InboxView({ inbox, accounts, onImport, onApprove, onDismiss }: { inbox:
                 <span className="inbox-source">{item.source === "sheet" ? <FileSpreadsheet size={19} /> : <Upload size={19} />}</span>
                 <span className="inbox-copy"><strong>{item.description}</strong><small>{formatDate(item.date, true)} · {account?.name || "Account unavailable"}</small><span>{item.suggestedType} · {item.suggestedCategory} · {Math.round(item.confidence * 100)}% match</span></span>
                 <strong>{item.suggestedType === "income" ? "+" : item.suggestedType === "expense" ? "−" : ""}{formatMoney(item.amount)}</strong>
-                <span className="inbox-actions"><button className="secondary-button" onClick={() => onDismiss(item)}><X size={15} /> Dismiss</button><button className="primary-button" onClick={() => onApprove(item)} disabled={!account}><Check size={15} /> Approve</button></span>
+                <span className="inbox-actions"><button className="secondary-button" onClick={() => onEdit(item)}><Edit3 size={15} /> Edit</button><button className="secondary-button" onClick={() => onDismiss(item)}><X size={15} /> Dismiss</button><button className="primary-button" onClick={() => onApprove(item)} disabled={!account}><Check size={15} /> Approve</button></span>
               </div>
             );
           })}
@@ -1246,8 +1432,8 @@ function SpendingPlanRow({ plan, spent, onSave }: { plan: FinanceData["spendingP
   return <div className="plan-row"><div className="plan-row-top"><span><i style={{ background: categoryColors[plan.category] || categoryColors.Other }} />{plan.category}<small>{formatMoney(spent)} spent</small></span>{editing ? <span className="inline-plan-edit"><input autoFocus type="number" min="0" value={amount} onChange={(event) => setAmount(event.target.value)} aria-label={`${plan.category} monthly plan`} /><button onClick={() => { onSave(plan.category, Number(amount) || 0, plan.space); setEditing(false); }}><Check size={15} /></button></span> : <button onClick={() => setEditing(true)}>{formatMoney(plan.monthlyLimit)} <Edit3 size={14} /></button>}</div><div className="plan-progress"><i className={ratio > 1 ? "over-plan" : ""} style={{ width: `${Math.min(100, ratio * 100)}%`, background: categoryColors[plan.category] || categoryColors.Other }} /></div><small>{ratio > 1 ? `${formatMoney(spent - plan.monthlyLimit)} over` : `${formatMoney(Math.max(0, plan.monthlyLimit - spent))} left`}</small></div>;
 }
 
-function FutureView({ goals, recurring, events, accounts, forecast, recurringCost, onAddGoal, onAddEvent, onAddRecurring, onToggleRecurring, onEditGoal, onEditEvent, onEditRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal, onToggleEvent }: {
-  goals: Goal[]; recurring: RecurringItem[]; events: PlannedEvent[]; accounts: Account[]; forecast: FinanceForecast; recurringCost: number; onAddGoal: () => void; onAddEvent: () => void; onAddRecurring: () => void; onToggleRecurring: (id: string) => void; onEditGoal: (goal: Goal) => void; onEditEvent: (event: PlannedEvent) => void; onEditRecurring: (item: RecurringItem) => void; goalContribution: string | null; setGoalContribution: (id: string | null) => void; contributionAmount: string; setContributionAmount: (value: string) => void; fundGoal: (id: string) => void; onToggleEvent: (id: string) => void;
+function FutureView({ goals, recurring, events, accounts, forecast, recurringCost, onAddGoal, onAddEvent, onAddRecurring, onToggleRecurring, onPostRecurring, onEditGoal, onEditEvent, onEditRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal, onToggleEvent }: {
+  goals: Goal[]; recurring: RecurringItem[]; events: PlannedEvent[]; accounts: Account[]; forecast: FinanceForecast; recurringCost: number; onAddGoal: () => void; onAddEvent: () => void; onAddRecurring: () => void; onToggleRecurring: (id: string) => void; onPostRecurring: (item: RecurringItem) => void; onEditGoal: (goal: Goal) => void; onEditEvent: (event: PlannedEvent) => void; onEditRecurring: (item: RecurringItem) => void; goalContribution: string | null; setGoalContribution: (id: string | null) => void; contributionAmount: string; setContributionAmount: (value: string) => void; fundGoal: (id: string) => void; onToggleEvent: (id: string) => void;
 }) {
   const plannedTotal = events.filter((item) => item.includeInPlan).reduce((sum, item) => sum + item.amount, 0);
   const hasForecastEvidence = forecast.historyMonths > 0;
@@ -1255,11 +1441,12 @@ function FutureView({ goals, recurring, events, accounts, forecast, recurringCos
     <section className="future-hero"><div><p className="eyebrow hero-eyebrow">Forecast runway</p><h2>{hasForecastEvidence ? `${formatMoney(Math.abs(forecast.monthlySurplus))} monthly ${forecast.monthlySurplus < 0 ? "deficit" : "surplus"}` : "Waiting for real activity"}</h2><p>{hasForecastEvidence ? `Based on ${forecast.historyMonths} month${forecast.historyMonths === 1 ? "" : "s"} of activity · ${forecast.confidence} confidence` : "Add an account and transactions before relying on a forecast."}</p></div><div className="future-stat"><span>Safe to spend</span><strong>{hasForecastEvidence ? formatMoney(forecast.safeToSpend) : "Not available"}</strong><small>{hasForecastEvidence ? "after goal contributions" : "needs income and spending"}</small></div><div className="future-stat"><span>Emergency cover</span><strong>{hasForecastEvidence ? `${forecast.emergencyMonths.toFixed(1)} months` : "Not available"}</strong><small>{hasForecastEvidence ? `${formatMoney(forecast.liquidBalance)} liquid` : "needs a liquid balance"}</small></div></section>
     <section className="goal-runway-grid">{goals.map((goal) => { const model = forecast.goalForecasts.find((item) => item.goalId === goal.id); return <button className="runway-card" key={goal.id} onClick={() => onEditGoal(goal)}><div className="runway-top"><span className={`goal-symbol goal-${goal.icon}`}><Target size={18} /></span><span className={model?.onTrack ? "status-on-track" : "status-watch"}>{model?.onTrack ? "On track" : "Needs attention"}</span></div><h3>{goal.name}</h3><strong>{model?.estimatedDate ? new Date(`${model.estimatedDate}T12:00:00`).toLocaleDateString("en-SG", { month: "long", year: "numeric" }) : "No forecast yet"}</strong><p>{model?.plannedEventDelayMonths ? `Planned events add about ${model.plannedEventDelayMonths} months.` : "No planned event delay modelled."}</p><div className="goal-progress"><i style={{ width: `${Math.min(100, (goal.current / goal.target) * 100)}%` }} /></div><small>{formatMoney(goal.current)} of {formatMoney(goal.target)} · tap to edit</small></button>; })}{!goals.length && <EmptyState icon={<Target />} title="Give the future a number" copy="Create a goal and Lifetime will estimate when you can reach it." />}</section>
     <div className="dashboard-grid"><section className="panel scenario-panel"><PanelHeading eyebrow="Scenario lab" title="What your plans change" action="Add event" onAction={onAddEvent} /><div className="scenario-summary"><span>Included life plans</span><strong>{formatMoney(plannedTotal)}</strong><small>Turn an event off to compare the forecast without it.</small></div><div className="event-list">{events.map((event) => <div className={event.includeInPlan ? "event-row" : "event-row event-muted"} key={event.id}><span className="event-date"><strong>{new Date(`${event.date}T12:00:00`).toLocaleDateString("en-SG", { month: "short" })}</strong><small>{new Date(`${event.date}T12:00:00`).getFullYear()}</small></span><button className="event-copy" onClick={() => onEditEvent(event)}><strong>{event.name}</strong><small>{event.kind} · tap to edit</small></button><strong>{formatMoney(event.amount)}</strong><button className={event.includeInPlan ? "tiny-toggle tiny-toggle-on" : "tiny-toggle"} onClick={() => onToggleEvent(event.id)} aria-label={`${event.includeInPlan ? "Exclude" : "Include"} ${event.name} in forecast`}><i /></button></div>)}{!events.length && <EmptyState icon={<CalendarDays />} title="No life plans yet" copy="Add a trip, move, car, education, or family event to model the trade-off." />}</div></section><section className="panel forecast-explain"><span className="coach-glance-icon"><WandSparkles size={21} /></span><p className="eyebrow">Scenario signal</p><h3>{plannedTotal ? `${formatMoney(plannedTotal)} of plans are competing with your goals.` : "No planned events are competing with your goals."}</h3><p>{forecast.goalForecasts.some((item) => item.plannedEventDelayMonths > 0) ? `The largest modelled delay is ${Math.max(...forecast.goalForecasts.map((item) => item.plannedEventDelayMonths))} months. Lifetime recalculates this when spending or contributions change.` : "Your forecast currently has no event-driven delays."}</p><small>Forecasts are estimates, not guarantees. Evidence: transaction averages, current balances, goal contributions and included events.</small></section></div>
-    <PlansView goals={goals} recurring={recurring} accounts={accounts} recurringCost={recurringCost} onAddGoal={onAddGoal} onAddRecurring={onAddRecurring} onToggleRecurring={onToggleRecurring} onEditGoal={onEditGoal} onEditRecurring={onEditRecurring} goalContribution={goalContribution} setGoalContribution={setGoalContribution} contributionAmount={contributionAmount} setContributionAmount={setContributionAmount} fundGoal={fundGoal} />
+    <PlansView goals={goals} recurring={recurring} accounts={accounts} recurringCost={recurringCost} onAddGoal={onAddGoal} onAddRecurring={onAddRecurring} onToggleRecurring={onToggleRecurring} onPostRecurring={onPostRecurring} onEditGoal={onEditGoal} onEditRecurring={onEditRecurring} goalContribution={goalContribution} setGoalContribution={setGoalContribution} contributionAmount={contributionAmount} setContributionAmount={setContributionAmount} fundGoal={fundGoal} />
   </div>;
 }
 
 function CoachView({ data, scope, forecast, categoryTotals, qwenConfigured, onCapture }: { data: FinanceData; scope: ViewScope; forecast: FinanceForecast; categoryTotals: [string, number][]; qwenConfigured: boolean; onCapture: () => void }) {
+  const { request } = useLifetimeApi();
   const [prompt, setPrompt] = useState("");
   const [messages, setMessages] = useState<Array<{ role: "user" | "coach"; text: string }>>([]);
   const [thinking, setThinking] = useState(false);
@@ -1283,9 +1470,9 @@ function CoachView({ data, scope, forecast, categoryTotals, qwenConfigured, onCa
     if (!question || thinking) return;
     setPrompt(""); setMessages((current) => [...current, { role: "user", text: question }]); setThinking(true);
     let answer = localCoach(question);
-    if (qwenConfigured) {
+    if (qwenConfigured && data.profile.aiEnabled) {
       try {
-        const response = await fetch("/api/coach", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "coach", prompt: question, context: { scope, forecast, goals: data.goals, plannedEvents: data.plannedEvents, categories: categoryTotals.slice(0, 6), accounts: data.accounts.map(({ name, type, balance, space }) => ({ name, type, balance, space })) }, lexicon: data.profile.voiceLexicon }) });
+        const response = await request("/api/coach", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "coach", prompt: question, context: { scope, forecast, goals: data.goals, plannedEvents: data.plannedEvents, categories: categoryTotals.slice(0, 6), accounts: data.accounts.map(({ name, type, balance, space }) => ({ name, type, balance, space })) }, lexicon: data.profile.voiceLexicon }) });
         const payload = await response.json() as { answer?: string };
         if (response.ok && payload.answer) answer = payload.answer;
       } catch { /* deterministic answer remains available */ }
@@ -1304,7 +1491,7 @@ function TogetherView({ data, accounts, members, viewerEmail, onSetup, onEditAcc
   const visibleMembers = members.length ? members : [{ email: viewerEmail, display_name: data.profile.name, role: "owner", status: "active" }, ...(data.profile.partnerEmail ? [{ email: data.profile.partnerEmail, display_name: data.profile.partnerName, role: "member", status: "pending" }] : [])];
   return <div className="page-stack"><PageHeading eyebrow="Private by default, shared on purpose" title={data.profile.householdName || "Together"} copy="Together combines your private records with records deliberately shared between members. The other person never receives your Personal records."><button className="primary-button" onClick={onSetup}><Settings2 size={17} /> Manage Together</button></PageHeading>
     <section className="household-hero"><div className="household-orbits"><span className="avatar">{data.profile.name.slice(0, 1)}</span><span className="avatar partner-avatar">{data.profile.partnerName?.slice(0, 1) || "P"}</span></div><div><p className="eyebrow hero-eyebrow">Together, with boundaries</p><h2>{formatMoney(sharedAccounts.reduce((sum, item) => sum + item.balance, 0))} shared net worth</h2><p>{sharedAccounts.length} shared accounts · {personalAccounts.length} personal accounts stay private in each member’s Personal view.</p></div></section>
-    <div className="dashboard-grid"><section className="panel members-panel"><PanelHeading eyebrow="People and access" title="Together members" action="Manage" onAction={onSetup} /><div className="member-list">{visibleMembers.map((member) => <div key={member.email}><span className="avatar">{(member.display_name || member.email).slice(0, 1).toUpperCase()}</span><span><strong>{member.display_name || member.email}</strong><small>{member.email}</small></span><span className={member.status === "active" ? "member-status active-member" : "member-status"}>{member.status === "active" ? "Active" : "Invite pending"}</span><small>{member.role}</small></div>)}</div><div className="info-note"><ShieldCheck size={17} /><span>An invitation is activated only when that person signs in with the same verified Google email. Database access rules keep every Personal space owner-only.</span></div></section><section className="panel access-panel"><PanelHeading eyebrow="Visibility" title="What the other person can see" /><div className="privacy-map"><div><span>Personal</span><strong>{personalAccounts.length} accounts</strong><small>Only you can read these records.</small></div><div><span>Shared in Together</span><strong>{sharedAccounts.length} accounts</strong><small>Visible to active Together members.</small></div></div><p className="privacy-caption">Your Together dashboard currently combines {accounts.length} accounts visible to you, without counting transfers as income or spending.</p></section></div>
+    <div className="dashboard-grid"><section className="panel members-panel"><PanelHeading eyebrow="People and access" title="Together members" action="Manage" onAction={onSetup} /><div className="member-list">{visibleMembers.map((member) => <div key={member.email}><span className="avatar">{(member.display_name || member.email).slice(0, 1).toUpperCase()}</span><span><strong>{member.display_name || member.email}</strong><small>{member.email}</small></span><span className={member.status === "active" ? "member-status active-member" : "member-status"}>{member.status === "active" ? "Active" : "Invite pending"}</span><small>{member.role}</small></div>)}</div><div className="info-note"><ShieldCheck size={17} /><span>An invitation activates only for the same verified Google or Apple email. Database access rules keep every Personal space owner-only.</span></div></section><section className="panel access-panel"><PanelHeading eyebrow="Visibility" title="What the other person can see" /><div className="privacy-map"><div><span>Personal</span><strong>{personalAccounts.length} accounts</strong><small>Only you can read these records.</small></div><div><span>Shared in Together</span><strong>{sharedAccounts.length} accounts</strong><small>Visible to active Together members.</small></div></div><p className="privacy-caption">Your Together dashboard currently combines {accounts.length} accounts visible to you, without counting transfers as income or spending.</p></section></div>
     <section className="panel household-accounts"><PanelHeading eyebrow="Shared balance sheet" title="Accounts shared in Together" /><div className="account-card-grid">{sharedAccounts.map((account) => <AccountCard key={account.id} account={account} onEdit={() => onEditAccount(account)} />)}{!sharedAccounts.length && <EmptyState icon={<Users />} title="Nothing shared yet" copy="Edit an account and set its visibility to Shared in Together." />}</div></section>
   </div>;
 }
@@ -1443,7 +1630,7 @@ function AccountsView({ accounts, netWorth, onAdd, onEdit }: { accounts: Account
   );
 }
 
-function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAddRecurring, onToggleRecurring, onEditGoal, onEditRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal }: {
+function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAddRecurring, onToggleRecurring, onPostRecurring, onEditGoal, onEditRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal }: {
   goals: Goal[];
   recurring: RecurringItem[];
   accounts: Account[];
@@ -1451,6 +1638,7 @@ function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAdd
   onAddGoal: () => void;
   onAddRecurring: () => void;
   onToggleRecurring: (id: string) => void;
+  onPostRecurring: (item: RecurringItem) => void;
   onEditGoal: (goal: Goal) => void;
   onEditRecurring: (item: RecurringItem) => void;
   goalContribution: string | null;
@@ -1494,7 +1682,7 @@ function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAdd
               <span>{account?.name || "Unknown"}</span>
               <span>{formatDate(item.nextDate, true)}</span>
               <strong>{formatMoney(item.amount)}</strong>
-              <span className="item-actions"><button className="edit-item-button" onClick={() => onEditRecurring(item)} aria-label={`Edit ${item.name}`}><Edit3 size={16} /></button><button className={item.active ? "status-toggle active" : "status-toggle"} onClick={() => onToggleRecurring(item.id)} aria-label={`${item.active ? "Pause" : "Resume"} ${item.name}`}><i /></button></span>
+              <span className="item-actions">{item.active && <button className="paid-item-button" onClick={() => onPostRecurring(item)}>Mark paid</button>}<button className="edit-item-button" onClick={() => onEditRecurring(item)} aria-label={`Edit ${item.name}`}><Edit3 size={16} /></button><button className={item.active ? "status-toggle active" : "status-toggle"} onClick={() => onToggleRecurring(item.id)} aria-label={`${item.active ? "Pause" : "Resume"} ${item.name}`}><i /></button></span>
             </div>
           );
         })}
@@ -1634,20 +1822,35 @@ function AccountRequired({ forWhat, onAddAccount }: { forWhat: string; onAddAcco
 
 function ModalShell({ title, eyebrow, onClose, children }: { title: string; eyebrow: string; onClose: () => void; children: React.ReactNode }) {
   const titleId = React.useId();
+  const sheetRef = useRef<HTMLElement>(null);
+  const closeRef = useRef(onClose);
+  useEffect(() => { closeRef.current = onClose; }, [onClose]);
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
+    const previousFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     document.body.style.overflow = "hidden";
-    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    window.addEventListener("keydown", closeOnEscape);
+    const focusables = () => [...(sheetRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])') || [])];
+    window.setTimeout(() => { if (!sheetRef.current?.contains(document.activeElement)) (focusables()[0] || sheetRef.current)?.focus(); }, 0);
+    const handleKeys = (event: KeyboardEvent) => {
+      if (event.key === "Escape") { event.preventDefault(); closeRef.current(); return; }
+      if (event.key !== "Tab") return;
+      const items = focusables();
+      if (!items.length) { event.preventDefault(); sheetRef.current?.focus(); return; }
+      const first = items[0]; const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+    };
+    window.addEventListener("keydown", handleKeys);
     return () => {
       document.body.style.overflow = previousOverflow;
-      window.removeEventListener("keydown", closeOnEscape);
+      window.removeEventListener("keydown", handleKeys);
+      previousFocus?.focus();
     };
-  }, [onClose]);
+  }, []);
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <section className="modal-sheet" role="dialog" aria-modal="true" aria-labelledby={titleId}>
+      <section ref={sheetRef} tabIndex={-1} className="modal-sheet" role="dialog" aria-modal="true" aria-labelledby={titleId}>
         <header><div><p className="eyebrow">{eyebrow}</p><h2 id={titleId}>{title}</h2></div><button className="icon-button" onClick={onClose} aria-label="Close"><X size={20} /></button></header>
         {children}
       </section>
@@ -1688,6 +1891,7 @@ function localCaptureDraft(text: string, accounts: Account[], scope: ViewScope):
 }
 
 function CaptureModal({ accounts, profile, scope, qwenConfigured, onClose, onTransaction, onPlan, onAsk, onProfile }: { accounts: Account[]; profile: FinanceData["profile"]; scope: ViewScope; qwenConfigured: boolean; onClose: () => void; onTransaction: (draft: Partial<Transaction>) => void; onPlan: (event: PlannedEvent) => void; onAsk: (prompt: string) => void; onProfile: (profile: FinanceData["profile"]) => void }) {
+  const { request } = useLifetimeApi();
   const [intent, setIntent] = useState<"transaction" | "plan" | "question">("transaction");
   const [inputMode, setInputMode] = useState<"voice" | "type">("voice");
   const [text, setText] = useState("");
@@ -1706,7 +1910,7 @@ function CaptureModal({ accounts, profile, scope, qwenConfigured, onClose, onTra
     setProcessing(true);
     try {
       const audio = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(blob); });
-      const response = await fetch("/api/voice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audio, locale: profile.voiceLocale || "en-SG", lexicon: profile.voiceLexicon || [] }) });
+      const response = await request("/api/voice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audio, locale: profile.voiceLocale || "en-SG", lexicon: profile.voiceLexicon || [] }) });
       const payload = await response.json() as { transcript?: string; error?: string };
       if (!response.ok || !payload.transcript) throw new Error(payload.error || "Voice transcription failed");
       setText(payload.transcript); setError("");
@@ -1716,7 +1920,7 @@ function CaptureModal({ accounts, profile, scope, qwenConfigured, onClose, onTra
 
   async function startVoice() {
     setError("");
-    if (qwenConfigured && navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined") {
+    if (qwenConfigured && profile.aiEnabled && navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined") {
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
         const recorder = new MediaRecorder(stream);
@@ -1747,10 +1951,10 @@ function CaptureModal({ accounts, profile, scope, qwenConfigured, onClose, onTra
       return;
     }
     let draft = localCaptureDraft(trimmed, accounts, scope);
-    if (qwenConfigured) {
+    if (qwenConfigured && profile.aiEnabled) {
       setProcessing(true);
       try {
-        const response = await fetch("/api/coach", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "capture", prompt: trimmed, lexicon: profile.voiceLexicon }) });
+        const response = await request("/api/coach", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode: "capture", prompt: trimmed, lexicon: profile.voiceLexicon }) });
         const payload = await response.json() as { parsed?: { intent?: TransactionType; description?: string; amount?: number; date?: string; category?: string; sourceAccount?: string; destinationAccount?: string } };
         if (response.ok && payload.parsed) {
           const parsed = payload.parsed; const source = accounts.find((item) => [item.name, item.institution].some((value) => parsed.sourceAccount?.toLowerCase().includes(value.toLowerCase()))) || accounts.find((item) => item.id === draft.accountId); const destination = accounts.find((item) => [item.name, item.institution].some((value) => parsed.destinationAccount?.toLowerCase().includes(value.toLowerCase())));
@@ -1764,10 +1968,10 @@ function CaptureModal({ accounts, profile, scope, qwenConfigured, onClose, onTra
 
   function addLexiconWord() { const value = newWord.trim(); if (!value) return; onProfile({ ...profile, voiceLexicon: [...new Set([...(profile.voiceLexicon || []), value])] }); setNewWord(""); }
 
-  return <ModalShell eyebrow="Voice-first financial capture" title="Tell Lifetime" onClose={onClose}><div className="capture-shell"><div className="capture-intents">{(["transaction", "plan", "question"] as const).map((item) => <button key={item} className={intent === item ? "capture-intent-active" : ""} onClick={() => setIntent(item)}>{item === "transaction" ? <ArrowLeftRight size={17} /> : item === "plan" ? <CalendarDays size={17} /> : <MessageCircle size={17} />}{item === "transaction" ? "Log money" : item === "plan" ? "Plan ahead" : "Ask Coach"}</button>)}</div><div className="capture-mode-switch"><button className={inputMode === "voice" ? "active" : ""} onClick={() => setInputMode("voice")}><Mic size={16} /> Talk</button><button className={inputMode === "type" ? "active" : ""} onClick={() => setInputMode("type")}><Edit3 size={16} /> Type</button></div>{inputMode === "voice" && <div className={listening ? "voice-stage voice-listening" : "voice-stage"}><button className="voice-orb" onClick={listening ? stopVoice : startVoice} aria-label={listening ? "Stop listening" : "Start listening"}><span><Mic size={28} /></span><i /><i /><i /></button><strong>{processing ? "Understanding your words…" : listening ? "I’m listening… tap when finished" : "Tap, then speak naturally"}</strong><p>{qwenConfigured ? "Enhanced speech recognition is active; your own vocabulary nudges exact spellings." : "Browser speech capture is active, and you can correct the transcript before saving."}</p></div>}<label className="field capture-transcript"><span>{inputMode === "voice" ? "Transcript — correct anything before continuing" : intent === "transaction" ? "Try “Spent $13.80 at Yochi on Revolut”" : intent === "plan" ? "Try “Plan $12,000 for Japan next April”" : "What do you want to understand?"}</span><textarea autoFocus={inputMode === "type"} value={text} onChange={(event) => setText(event.target.value)} placeholder="Your words appear here…" /></label><div className="voice-lexicon"><div><strong>Your vocabulary</strong><small>Names, Singlish, merchants and community terms that should be spelt exactly.</small></div><div className="lexicon-tags">{(profile.voiceLexicon || []).slice(0, 8).map((word) => <span key={word}>{word}</span>)}</div><div className="lexicon-add"><input value={newWord} onChange={(event) => setNewWord(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addLexiconWord(); } }} placeholder="Add Yochi, PayNow…" /><button onClick={addLexiconWord}><Plus size={16} /></button></div></div>{error && <p className="form-error">{error}</p>}<div className="form-actions"><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={continueCapture} disabled={processing}>{processing ? "Understanding…" : intent === "transaction" ? "Review transaction" : intent === "plan" ? "Add to forecast" : "Ask Coach"}</button></div></div></ModalShell>;
+  return <ModalShell eyebrow="Voice-first financial capture" title="Tell Lifetime" onClose={onClose}><div className="capture-shell"><div className="capture-intents">{(["transaction", "plan", "question"] as const).map((item) => <button key={item} className={intent === item ? "capture-intent-active" : ""} onClick={() => setIntent(item)}>{item === "transaction" ? <ArrowLeftRight size={17} /> : item === "plan" ? <CalendarDays size={17} /> : <MessageCircle size={17} />}{item === "transaction" ? "Log money" : item === "plan" ? "Plan ahead" : "Ask Coach"}</button>)}</div><div className="capture-mode-switch"><button className={inputMode === "voice" ? "active" : ""} onClick={() => setInputMode("voice")}><Mic size={16} /> Talk</button><button className={inputMode === "type" ? "active" : ""} onClick={() => setInputMode("type")}><Edit3 size={16} /> Type</button></div>{inputMode === "voice" && <div className={listening ? "voice-stage voice-listening" : "voice-stage"}><button className="voice-orb" onClick={listening ? stopVoice : startVoice} aria-label={listening ? "Stop listening" : "Start listening"}><span><Mic size={28} /></span><i /><i /><i /></button><strong>{processing ? "Understanding your words…" : listening ? "I’m listening… tap when finished" : "Tap, then speak naturally"}</strong><p>{qwenConfigured && profile.aiEnabled ? "Enhanced speech is enabled; audio is sent to Qwen only after you tap." : "Private AI is off. Browser speech is used when available, and you review every result."}</p></div>}<label className="field capture-transcript"><span>{inputMode === "voice" ? "Transcript — correct anything before continuing" : intent === "transaction" ? "Try “Spent $13.80 at Yochi on Revolut”" : intent === "plan" ? "Try “Plan $12,000 for Japan next April”" : "What do you want to understand?"}</span><textarea autoFocus={inputMode === "type"} value={text} onChange={(event) => setText(event.target.value)} placeholder="Your words appear here…" /></label><div className="voice-lexicon"><div><strong>Your vocabulary</strong><small>Names, Singlish, merchants and community terms that should be spelt exactly.</small></div><div className="lexicon-tags">{(profile.voiceLexicon || []).slice(0, 8).map((word) => <span key={word}>{word}</span>)}</div><div className="lexicon-add"><input value={newWord} onChange={(event) => setNewWord(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addLexiconWord(); } }} placeholder="Add Yochi, PayNow…" /><button onClick={addLexiconWord}><Plus size={16} /></button></div></div>{error && <p className="form-error">{error}</p>}<div className="form-actions"><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={continueCapture} disabled={processing}>{processing ? "Understanding…" : intent === "transaction" ? "Review transaction" : intent === "plan" ? "Add to forecast" : "Ask Coach"}</button></div></div></ModalShell>;
 }
 
-function TransactionModal({ initial, accounts, scope, onNeedAccount, onClose, onSubmit }: { initial?: Partial<Transaction> | null; accounts: Account[]; scope: ViewScope; onNeedAccount: () => void; onClose: () => void; onSubmit: (transaction: Transaction) => void }) {
+function TransactionModal({ initial, accounts, scope, onNeedAccount, onClose, onSubmit, onDelete }: { initial?: Partial<Transaction> | null; accounts: Account[]; scope: ViewScope; onNeedAccount: () => void; onClose: () => void; onSubmit: (transaction: Transaction) => void; onDelete?: () => void }) {
   const defaultAccount = accounts.find((account) => account.space === (scope === "all" ? "personal" : scope)) || accounts[0];
   const [type, setType] = useState<TransactionType>(initial?.type || "expense");
   const [amount, setAmount] = useState(initial?.amount != null ? String(initial.amount) : "");
@@ -1777,6 +1981,7 @@ function TransactionModal({ initial, accounts, scope, onNeedAccount, onClose, on
   const [accountId, setAccountId] = useState(initial?.accountId || defaultAccount?.id || "");
   const [transferAccountId, setTransferAccountId] = useState(initial?.transferAccountId || "");
   const [note, setNote] = useState(initial?.note || "");
+  const [affectsBalance, setAffectsBalance] = useState(initial?.affectsBalance ?? true);
 
   const selectedAccount = accounts.find((account) => account.id === accountId);
   const destination = accounts.find((account) => account.id === transferAccountId);
@@ -1801,6 +2006,7 @@ function TransactionModal({ initial, accounts, scope, onNeedAccount, onClose, on
       note: note.trim() || undefined,
       space: transactionScope,
       source: initial?.source || "manual",
+      affectsBalance,
     });
   }
 
@@ -1822,9 +2028,10 @@ function TransactionModal({ initial, accounts, scope, onNeedAccount, onClose, on
           ) : <label className="field"><span>Category</span><input value="Income" disabled /></label>}
           <label className="field"><span>Date</span><input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
           <label className="field"><span>Note (optional)</span><input value={note} onChange={(event) => setNote(event.target.value)} placeholder="Add context" /></label>
+          <label className="check-field full-field"><input type="checkbox" checked={affectsBalance} onChange={(event) => setAffectsBalance(event.target.checked)} /><span><strong>Update the account balance</strong><small>Turn this off for statement history already included in the current balance.</small></span></label>
         </div>
         {type === "transfer" && <div className="info-note"><ShieldCheck size={17} /><span>This moves money between accounts. It will not change your income, spending, or savings rate.</span></div>}
-        <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{initial?.id ? "Save changes" : `Save ${type}`}</button></div>
+        <div className="form-actions">{initial?.id && onDelete && <button type="button" className="secondary-button danger-button form-delete-button" onClick={onDelete}><Trash2 size={16} /> Delete</button>}<span className="form-action-spacer" /><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">{initial?.id ? "Save changes" : `Save ${type}`}</button></div>
       </form>}
     </ModalShell>
   );
@@ -1863,7 +2070,44 @@ function AccountModal({ initial, scope, canShare, profileName, partnerName, onCl
   );
 }
 
-function HouseholdModal({ profile, members, viewerEmail, onClose, onSubmit }: { profile: FinanceData["profile"]; members: Array<{ email: string; display_name: string; role: string; status: string }>; viewerEmail: string; onClose: () => void; onSubmit: (profile: FinanceData["profile"], prepareEmail?: boolean) => void }) {
+function SettingsModal({ profile, hasTogether, onClose, onProfile, onTogether, onExport, onRestore, onRestoreVersion, onClear, onDeleteAccount }: { profile: FinanceData["profile"]; hasTogether: boolean; onClose: () => void; onProfile: (profile: FinanceData["profile"]) => void; onTogether: () => void; onExport: () => void; onRestore: (file: File) => void; onRestoreVersion: (entry: RecoveryEntry) => void; onClear: () => void; onDeleteAccount: () => void }) {
+  const { request, publicBaseUrl } = useLifetimeApi();
+  const [name, setName] = useState(profile.name);
+  const [historyState, setHistoryState] = useState<"loading" | "ready" | "unavailable" | "error">("loading");
+  const [history, setHistory] = useState<RecoveryEntry[]>([]);
+  useEffect(() => {
+    let active = true;
+    request("/api/history", { cache: "no-store" }).then(async (response) => {
+      if (!response.ok) throw new Error("history unavailable");
+      return response.json() as Promise<{ available?: boolean; entries?: RecoveryEntry[] }>;
+    }).then((payload) => {
+      if (!active) return;
+      setHistory(payload.entries || []);
+      setHistoryState(payload.available === false ? "unavailable" : "ready");
+    }).catch(() => { if (active) setHistoryState("error"); });
+    return () => { active = false; };
+  }, [request]);
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!name.trim()) return;
+    onProfile({ ...profile, name: name.trim() });
+    onClose();
+  }
+  return <ModalShell eyebrow="Preferences and privacy" title="Settings" onClose={onClose}>
+    <form className="form-stack" onSubmit={submit}>
+      <label className="field"><span>Display name</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <label className="check-field settings-check"><input type="checkbox" checked={profile.aiEnabled === true} onChange={(event) => onProfile({ ...profile, aiEnabled: event.target.checked })} /><span><strong>Private AI processing</strong><small>Off by default. When enabled, Coach context or voice audio is sent to the configured Qwen service only when you ask.</small></span></label>
+      <section className="settings-section"><div><strong>Together</strong><small>{hasTogether ? "Manage members and shared access." : "Invite a partner or family member when you are ready."}</small></div><button type="button" className="secondary-button" onClick={onTogether}>{hasTogether ? "Manage" : "Set up"}</button></section>
+      <section className="settings-section settings-stack"><div><strong>Your data</strong><small>Keep your own portable backup or restore one you exported earlier.</small></div><div className="settings-actions"><button type="button" className="secondary-button" onClick={onExport}><Download size={16} /> Export</button><label className="secondary-button file-button"><Upload size={16} /> Restore<input className="file-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void onRestore(file); event.currentTarget.value = ""; }} /></label></div></section>
+      <section className="settings-history"><div><strong>Recent changes</strong><small>Restore a Personal or Together space without affecting the other one.</small></div>{historyState === "loading" ? <p>Loading recovery points…</p> : historyState === "unavailable" ? <p>Recovery history becomes available after the current database upgrade is applied.</p> : historyState === "error" ? <p>Recovery history could not be loaded right now.</p> : history.length ? <div className="history-list">{history.slice(0, 8).map((entry) => <button type="button" key={entry.id} onClick={() => onRestoreVersion(entry)}><span><strong>{entry.scope === "household" ? "Together" : "Personal"}</strong><small>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(entry.createdAt))}</small></span><span>Restore</span></button>)}</div> : <p>Your recovery points will appear after the next saved change.</p>}</section>
+      <div className="settings-links"><a href={`${publicBaseUrl}/privacy`} target={publicBaseUrl ? "_blank" : undefined} rel={publicBaseUrl ? "noreferrer" : undefined}>Privacy</a><a href={`${publicBaseUrl}/terms`} target={publicBaseUrl ? "_blank" : undefined} rel={publicBaseUrl ? "noreferrer" : undefined}>Terms</a><a href={`${publicBaseUrl}/support`} target={publicBaseUrl ? "_blank" : undefined} rel={publicBaseUrl ? "noreferrer" : undefined}>Support</a></div>
+      <details className="danger-zone"><summary>Danger zone</summary><p>Clearing removes finance records but keeps your login. Account deletion permanently removes your login and data owned by you.</p><div><button type="button" className="secondary-button danger-button" onClick={onClear}>Clear finance data</button><button type="button" className="secondary-button danger-button" onClick={onDeleteAccount}>Delete account</button></div></details>
+      <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" type="submit">Save settings</button></div>
+    </form>
+  </ModalShell>;
+}
+
+function HouseholdModal({ profile, members, viewerEmail, inviteUrl, onClose, onSubmit, onManage, notify }: { profile: FinanceData["profile"]; members: Array<{ email: string; display_name: string; role: string; status: string }>; viewerEmail: string; inviteUrl: string | null; onClose: () => void; onSubmit: (profile: FinanceData["profile"], prepareEmail?: boolean) => void; onManage: (action: "revoke" | "leave" | "close", email?: string) => void; notify: (message: string) => void }) {
   const [name, setName] = useState(profile.name);
   const [householdName, setHouseholdName] = useState(profile.householdName);
   const [partnerName, setPartnerName] = useState(profile.partnerName || "");
@@ -1873,13 +2117,15 @@ function HouseholdModal({ profile, members, viewerEmail, onClose, onSubmit }: { 
   const [error, setError] = useState("");
   const invitedMember = members.find((member) => member.email.toLowerCase() !== viewerEmail.toLowerCase());
   const inviteStatus = invitedMember?.status || (profile.partnerEmail ? "pending" : null);
+  const ownMembership = members.find((member) => member.email.toLowerCase() === viewerEmail.toLowerCase());
+  const isOwner = ownMembership?.role === "owner" || members.length === 0;
 
   function submit(event: FormEvent) {
     event.preventDefault();
     const normalizedEmail = partnerEmail.trim().toLowerCase();
     if (!name.trim() || !householdName.trim() || !partnerName.trim() || !normalizedEmail) return;
     if (normalizedEmail === viewerEmail.toLowerCase()) {
-      setError("Invite the other person’s Google email, not the email you are signed in with.");
+      setError("Invite the other person’s sign-in email, not the email you are using now.");
       return;
     }
     const submitter = (event.nativeEvent as SubmitEvent).submitter as HTMLButtonElement | null;
@@ -1897,22 +2143,24 @@ function HouseholdModal({ profile, members, viewerEmail, onClose, onSubmit }: { 
 
   return (
     <ModalShell eyebrow="Personal + Together" title={profile.partnerEmail ? "Manage Together" : "Invite someone to Together"} onClose={onClose}>
+      {!isOwner ? <div className="form-stack"><div className="info-note"><ShieldCheck size={17} /><span>You are a member of {profile.householdName}. Shared records are visible here; your Personal space stays private.</span></div><div className="member-access-row"><div><strong>{invitedMember?.display_name || "Together owner"}</strong><small>{invitedMember?.email}</small></div><span>Owner</span></div><div className="form-actions"><button className="secondary-button" onClick={onClose}>Done</button><span className="form-action-spacer" /><button className="secondary-button danger-button" onClick={() => onManage("leave")}>Leave Together</button></div></div> :
       <form className="form-stack" onSubmit={submit}>
         <div className="household-people">
           <div><span className="avatar">{name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span><span><strong>{name || "You"}</strong><small>{viewerEmail} · signed in</small></span><Check size={17} /></div>
-          <div><span className="avatar partner-avatar">{partnerName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "P"}</span><span><strong>{partnerName || "Partner"}</strong><small>{partnerEmail || "Add their Google email below"}</small></span>{inviteStatus === "active" ? <Check size={17} /> : <Mail size={17} />}</div>
+          <div><span className="avatar partner-avatar">{partnerName.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "P"}</span><span><strong>{partnerName || "Partner"}</strong><small>{partnerEmail || "Add their sign-in email below"}</small></span>{inviteStatus === "active" ? <Check size={17} /> : <Mail size={17} />}</div>
         </div>
         <div className="form-grid">
           <label className="field"><span>Your display name</span><input required value={name} onChange={(event) => setName(event.target.value)} /></label>
           <label className="field"><span>Together name</span><input required value={householdName} onChange={(event) => setHouseholdName(event.target.value)} placeholder="Peter & MJ" /></label>
           <label className="field"><span>Partner or family member</span><input required value={partnerName} onChange={(event) => setPartnerName(event.target.value)} placeholder="Their name" /></label>
-          <label className="field"><span>Their Google email</span><input required disabled={inviteStatus === "active"} type="email" value={partnerEmail} onChange={(event) => { setPartnerEmail(event.target.value); setError(""); }} placeholder="partner@example.com" /></label>
+          <label className="field"><span>Their sign-in email</span><input required disabled={inviteStatus === "active"} type="email" value={partnerEmail} onChange={(event) => { setPartnerEmail(event.target.value); setError(""); }} placeholder="partner@example.com" /></label>
           <label className="field"><span>Voice and accent region</span><select value={voiceLocale} onChange={(event) => setVoiceLocale(event.target.value)}><option value="en-SG">English · Singapore</option><option value="en-IN">English · India</option><option value="en-GB">English · United Kingdom</option><option value="en-US">English · United States</option><option value="ms-MY">Malay · Malaysia</option><option value="zh-SG">Mandarin · Singapore</option></select></label>
           <label className="field"><span>Voice vocabulary</span><input value={voiceLexicon} onChange={(event) => setVoiceLexicon(event.target.value)} placeholder="Yochi, PayNow, kopitiam…" /></label>
         </div>
         {error && <p className="form-error">{error}</p>}
+        {inviteUrl && inviteStatus && <div className="invite-link"><div><strong>Secure invitation link</strong><small>It only works for the invited email.</small></div><button type="button" className="secondary-button" onClick={() => { void navigator.clipboard.writeText(inviteUrl); notify("Invitation link copied."); }}><Check size={16} /> Copy link</button></div>}
         <div className="invite-explainer">
-          <div><span>1</span><p><strong>Save the invitation</strong><small>Lifetime records the invited Google email as pending.</small></p></div>
+          <div><span>1</span><p><strong>Save the invitation</strong><small>Lifetime records the verified sign-in email as pending.</small></p></div>
           <div><span>2</span><p><strong>Send the prepared email</strong><small>Your own mail app sends a login link; Lifetime does not read your contacts.</small></p></div>
           <div><span>3</span><p><strong>They sign in with that email</strong><small>The verified match activates Together automatically.</small></p></div>
         </div>
@@ -1921,8 +2169,8 @@ function HouseholdModal({ profile, members, viewerEmail, onClose, onSubmit }: { 
           <p><strong>Family members:</strong> database row-level rules keep Personal records owner-only. Active members can read only records deliberately marked Shared in Together.</p>
           <p><strong>Important:</strong> the Supabase project administrator can still administer the hosted database. This is protected access, not zero-knowledge end-to-end encryption.</p>
         </details>
-        <div className="form-actions"><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><span className="form-action-spacer" /><button className="secondary-button" type="submit" value="save">Save only</button>{inviteStatus !== "active" && <button className="primary-button" type="submit" value="email"><Mail size={16} /> {inviteStatus === "pending" ? "Save & resend invite" : "Save & draft invite"}</button>}</div>
-      </form>
+        <div className="form-actions">{invitedMember && <button type="button" className="secondary-button danger-button" onClick={() => onManage("revoke", invitedMember.email)}>Remove access</button>}<button type="button" className="secondary-button danger-button" onClick={() => onManage("close")}>Close Together</button><span className="form-action-spacer" /><button type="button" className="secondary-button" onClick={onClose}>Cancel</button><button className="secondary-button" type="submit" value="save">Save only</button>{inviteStatus !== "active" && <button className="primary-button" type="submit" value="email"><Mail size={16} /> {inviteStatus === "pending" ? "Save & resend invite" : "Save & draft invite"}</button>}</div>
+      </form>}
     </ModalShell>
   );
 }
@@ -2026,11 +2274,37 @@ function RecurringModal({ initial, scope, accounts, onNeedAccount, onClose, onSu
 }
 
 function ImportModal({ data, scope, onNeedAccount, onClose, setData, onStage, notify }: { data: FinanceData; scope: ViewScope; onNeedAccount: () => void; onClose: () => void; setData: React.Dispatch<React.SetStateAction<FinanceData>>; onStage: (transactions: Transaction[]) => void; notify: (message: string) => void }) {
+  const { request } = useLifetimeApi();
   const [text, setText] = useState("");
   const [report, setReport] = useState<ImportReport | null>(null);
+  const [receiptAccountId, setReceiptAccountId] = useState(data.accounts[0]?.id || "");
+  const [receiptWorking, setReceiptWorking] = useState(false);
+  const [receiptError, setReceiptError] = useState("");
+
+  async function loadCsvFile(file: File) {
+    if (file.size > 5_000_000) { setReport({ accepted: [], duplicates: 0, rejected: [], error: "That CSV is larger than 5 MB." }); return; }
+    setText(await file.text()); setReport(null);
+  }
+
+  async function scanReceipt(file: File) {
+    const account = data.accounts.find((item) => item.id === receiptAccountId);
+    if (!account) { setReceiptError("Choose the account used for this payment."); return; }
+    if (!profileAiEnabled(data)) { setReceiptError("Enable Private AI processing in Settings before scanning a receipt."); return; }
+    if (file.size > 8_000_000) { setReceiptError("Choose an image under 8 MB."); return; }
+    setReceiptWorking(true); setReceiptError("");
+    try {
+      const image = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(file); });
+      const response = await request("/api/receipt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ image }) });
+      const payload = await response.json() as { receipt?: { merchant: string; total: number; date: string; category: string; confidence: number }; error?: string };
+      if (!response.ok || !payload.receipt) throw new Error(payload.error || "Receipt recognition failed");
+      const receipt = payload.receipt;
+      onStage([{ id: uid("receipt"), type: "expense", amount: receipt.total, date: receipt.date, description: receipt.merchant, category: expenseCategories.includes(receipt.category) ? receipt.category : "Other", accountId: account.id, space: account.space, source: "receipt", affectsBalance: true }]);
+    } catch (reason) { setReceiptError(reason instanceof Error ? reason.message : "Receipt recognition failed"); }
+    finally { setReceiptWorking(false); }
+  }
 
   function importRows() {
-    const result = importTransactions(text, { accounts: data.accounts, existing: data.transactions, scope });
+    const result = importTransactions(text, { accounts: data.accounts, existing: data.transactions, scope, defaultAccountId: receiptAccountId });
     setReport(result);
     if (result.error || !result.accepted.length) return;
     setData((current) => ({
@@ -2043,7 +2317,7 @@ function ImportModal({ data, scope, onNeedAccount, onClose, setData, onStage, no
   }
 
   function reviewRows() {
-    const result = importTransactions(text, { accounts: data.accounts, existing: data.transactions, scope });
+    const result = importTransactions(text, { accounts: data.accounts, existing: data.transactions, scope, defaultAccountId: receiptAccountId });
     setReport(result);
     if (result.error || !result.accepted.length) return;
     onStage(result.accepted);
@@ -2053,7 +2327,10 @@ function ImportModal({ data, scope, onNeedAccount, onClose, setData, onStage, no
     <ModalShell eyebrow="Sheets and statements" title="Import transactions" onClose={onClose}>
       {!data.accounts.length ? <AccountRequired forWhat="A transaction import" onAddAccount={onNeedAccount} /> : <>
       <div className="import-copy"><span className="import-icon"><FileSpreadsheet size={22} /></span><div><strong>Paste rows from Google Sheets or a CSV</strong><p>Use the columns date, description, amount, type, category, and account. Negative amounts become expenses when type is blank. Rows matching a transaction you already have are skipped.</p></div></div>
+      <div className="import-file-row"><label className="secondary-button file-button"><FileSpreadsheet size={16} /> Choose CSV<input className="file-input" type="file" accept=".csv,text/csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadCsvFile(file); event.currentTarget.value = ""; }} /></label><label className="import-account"><span>Default account</span><select value={receiptAccountId} onChange={(event) => setReceiptAccountId(event.target.value)}>{data.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><span>Used only when a row has no account column. Statement rows do not change the current balance you entered.</span></div>
       <textarea className="import-textarea" value={text} onChange={(event) => { setText(event.target.value); setReport(null); }} placeholder={"date,description,amount,type,category,account\n2026-08-14,Coffee,6.50,expense,Food & dining,Everyday"} aria-label="Transaction CSV data" />
+      <div className="receipt-import"><div><strong>Receipt or payment screenshot</strong><small>Choose the account, then scan an image into the review inbox.</small></div><select value={receiptAccountId} onChange={(event) => setReceiptAccountId(event.target.value)} aria-label="Receipt account">{data.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><label className="secondary-button file-button"><Upload size={16} /> {receiptWorking ? "Reading…" : "Scan image"}<input className="file-input" disabled={receiptWorking} type="file" accept="image/jpeg,image/png,image/webp" capture="environment" onChange={(event) => { const file = event.target.files?.[0]; if (file) void scanReceipt(file); event.currentTarget.value = ""; }} /></label></div>
+      {receiptError && <p className="form-error">{receiptError}</p>}
       <div className="info-note"><ShieldCheck size={17} /><span>Transfers are intentionally skipped here so they can be linked safely between two accounts in the ledger.</span></div>
       {report?.error && <p className="form-error">{report.error}</p>}
       {report && !report.error && (
@@ -2074,4 +2351,8 @@ function ImportModal({ data, scope, onNeedAccount, onClose, setData, onStage, no
       </>}
     </ModalShell>
   );
+}
+
+function profileAiEnabled(data: FinanceData) {
+  return data.profile.aiEnabled === true;
 }

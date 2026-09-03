@@ -1,8 +1,13 @@
 import { getAuthenticatedUser } from "@/lib/supabase/server";
+import { checkAiAccess } from "@/lib/server/aiAccess";
+import { isTrustedMutation } from "@/lib/server/requestSecurity";
 
 export async function POST(request: Request) {
-  const { user } = await getAuthenticatedUser();
-  if (!user) return Response.json({ error: "Sign in required" }, { status: 401 });
+  if (!isTrustedMutation(request)) return Response.json({ error: "Cross-site request blocked" }, { status: 403 });
+  const { supabase, user } = await getAuthenticatedUser(request);
+  if (!supabase || !user) return Response.json({ error: "Sign in required" }, { status: 401 });
+  const access = await checkAiAccess(supabase, user, "voice");
+  if (!access.allowed) return Response.json({ error: access.message }, { status: access.message.startsWith("Hourly") ? 429 : 403 });
   const apiKey = process.env.DASHSCOPE_API_KEY;
   const baseUrl = (process.env.QWEN_BASE_URL || "https://dashscope-intl.aliyuncs.com/compatible-mode/v1").replace(/\/$/, "");
   if (!apiKey) return Response.json({ error: "Qwen speech is not configured" }, { status: 503 });
