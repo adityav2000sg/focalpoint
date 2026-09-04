@@ -294,12 +294,33 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .contribution-form label span { color: #75827b; font-size: 10px; }.contribution-form input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; }
 .contribution-form button { padding: 0 13px; border: 0; border-radius: 9px; color: white; background: var(--forest); font-size: 10px; font-weight: var(--weight-strong); cursor: pointer; }
 
-.upcoming-list > div { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 11px; padding: 9px 0; border-top: 1px solid var(--line); }
+.upcoming-list > div { display: grid; grid-template-columns: auto minmax(0,1fr) auto auto; align-items: center; gap: 11px; padding: 9px 0; border-top: 1px solid var(--line); }
 .upcoming-list > div:first-child { border-top: 0; }
 .date-tile { width: 35px; height: 38px; display: flex; flex-direction: column; align-items: center; justify-content: center; border-radius: 10px; color: #426f60; background: rgba(159,225,194,.16); }
 .date-tile strong { font-size: 12px; line-height: 1; }.date-tile small { margin-top: 3px; font-size: 7px; text-transform: uppercase; }
-.upcoming-name strong, .upcoming-name small { display: block; }.upcoming-name strong { font-size: 13px; }.upcoming-name small { margin-top: 4px; color: #73827a; font-size: 11px; text-transform: capitalize; }
+.upcoming-name strong, .upcoming-name small { display: block; }.upcoming-name strong { font-size: 13px; }.upcoming-name small { margin-top: 4px; color: #73827a; font-size: 11px; }
+.upcoming-name small .lead { text-transform: capitalize; }
 .upcoming-list > div > strong { font-size: 13px; }
+/* An overdue row has to read as needing action without shouting; the tile carries the
+   signal so the row itself stays calm enough to sit on the Today screen. */
+.upcoming-row.is-overdue .date-tile { color: #8c3d1f; background: rgba(239,131,84,.18); }
+.upcoming-row.is-overdue .upcoming-name small { color: #a24a24; }
+.upcoming-amount { white-space: nowrap; }
+/* A total that silently omitted a balance would be a lie, so the omission gets its own row. */
+.fx-warning { display: grid; grid-template-columns: auto minmax(0,1fr) auto; align-items: center; gap: 11px; margin-bottom: 18px; padding: 12px 15px; border: 1px solid rgba(224,184,95,.4); border-radius: 15px; background: rgba(224,184,95,.12); color: #6d5417; font-size: 12px; }
+.fx-warning svg { color: #9a7414; }
+.fx-warning .secondary-button { min-height: 36px; padding-inline: 13px; white-space: nowrap; }
+.fx-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(170px,1fr)); gap: 10px; }
+.fx-section small { line-height: 1.55; }
+.fx-stamp { margin-top: 4px; }
+@media (max-width: 720px) {
+  .fx-warning { grid-template-columns: auto minmax(0,1fr); }
+  .fx-warning .secondary-button { grid-column: 1 / -1; width: 100%; }
+}
+.upcoming-spacer { width: 0; }
+.upcoming-list .paid-item-button { white-space: nowrap; }
+.next-date small { display: block; margin-top: 2px; color: #a24a24; font-size: 10px; }
+.next-date.is-overdue { color: #8c3d1f; }
 
 .empty-state { min-height: 170px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 24px; text-align: center; }
 .empty-state > span { width: 38px; height: 38px; display: grid; place-items: center; margin-bottom: 11px; border-radius: 12px; color: #5d7e72; background: rgba(92,146,124,.1); }

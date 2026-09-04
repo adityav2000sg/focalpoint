@@ -5,6 +5,16 @@ import {
   Transaction,
   applyTransaction,
   advanceRecurringDate,
+  buildHorizon,
+  convertToBase,
+  formatAccountBalance,
+  isCurrencyCode,
+  sumAccountsInBase,
+  sumTransactionsInBase,
+  unratedCurrencies,
+  countOverdue,
+  daysUntil,
+  dueStatus,
   buildForecast,
   createEmptyFinanceData,
   formatCoverMonths,
@@ -275,5 +285,148 @@ describe("emergency cover formatting", () => {
   it("reports nothing when there is no spending to divide by", () => {
     expect(formatCoverMonths(0)).toBe("0 months");
     expect(formatCoverMonths(-4)).toBe("0 months");
+  });
+});
+
+const recurringItem = (over: Partial<import("@/lib/finance").RecurringItem> = {}) => ({
+  id: "r1", name: "Spotify", amount: 16.9, cadence: "monthly" as const, nextDate: "2026-09-25",
+  accountId: "a1", category: "Subscriptions", space: "personal" as const, active: true, ...over,
+});
+
+const eventItem = (over: Partial<import("@/lib/finance").PlannedEvent> = {}) => ({
+  id: "e1", name: "Japan flights", amount: 2400, date: "2026-09-10",
+  kind: "travel" as const, space: "personal" as const, includeInPlan: true, ...over,
+});
+
+describe("due status", () => {
+  it("separates passed, current and approaching dates", () => {
+    expect(dueStatus("2026-09-01", "2026-09-04")).toBe("overdue");
+    expect(dueStatus("2026-09-04", "2026-09-04")).toBe("today");
+    expect(dueStatus("2026-09-11", "2026-09-04")).toBe("soon");
+    expect(dueStatus("2026-09-12", "2026-09-04")).toBe("scheduled");
+  });
+
+  it("counts whole days in both directions", () => {
+    expect(daysUntil("2026-09-09", "2026-09-04")).toBe(5);
+    expect(daysUntil("2026-08-30", "2026-09-04")).toBe(-5);
+    expect(daysUntil("2026-09-04", "2026-09-04")).toBe(0);
+  });
+
+  it("does not lose a day across a month or year boundary", () => {
+    expect(daysUntil("2027-01-01", "2026-12-31")).toBe(1);
+    expect(daysUntil("2026-03-01", "2026-02-28")).toBe(1);
+  });
+});
+
+describe("horizon", () => {
+  it("orders by date rather than the order records were created", () => {
+    const horizon = buildHorizon([
+      recurringItem({ id: "r1", name: "Spotify", nextDate: "2026-09-25" }),
+      recurringItem({ id: "r2", name: "Rent", nextDate: "2026-09-01" }),
+      recurringItem({ id: "r3", name: "Insurance", nextDate: "2026-09-05" }),
+    ], [], "2026-09-04");
+    expect(horizon.map((item) => item.name)).toEqual(["Rent", "Insurance", "Spotify"]);
+  });
+
+  it("merges planned events into the same ordered list", () => {
+    const horizon = buildHorizon(
+      [recurringItem({ nextDate: "2026-09-25" })],
+      [eventItem({ date: "2026-09-10" })],
+      "2026-09-04",
+    );
+    expect(horizon.map((item) => [item.kind, item.name])).toEqual([["event", "Japan flights"], ["recurring", "Spotify"]]);
+  });
+
+  it("keeps a passed date at the top as overdue instead of hiding it", () => {
+    const horizon = buildHorizon(
+      [recurringItem({ id: "r1", name: "Rent", nextDate: "2026-08-28" }), recurringItem({ id: "r2", name: "Spotify", nextDate: "2026-09-25" })],
+      [],
+      "2026-09-04",
+    );
+    expect(horizon[0].name).toBe("Rent");
+    expect(horizon[0].status).toBe("overdue");
+    expect(horizon[0].daysAway).toBe(-7);
+    expect(countOverdue(horizon)).toBe(1);
+  });
+
+  it("leaves paused recurring payments out entirely", () => {
+    expect(buildHorizon([recurringItem({ active: false })], [], "2026-09-04")).toHaveLength(0);
+  });
+
+  it("reports nothing to chase when every date is still ahead", () => {
+    expect(countOverdue(buildHorizon([recurringItem({ nextDate: "2026-09-25" })], [], "2026-09-04"))).toBe(0);
+  });
+});
+
+const acct = (over: Partial<Account> = {}): Account => ({
+  id: "a1", name: "Everyday", institution: "DBS", type: "checking", space: "personal",
+  owner: "Peter", balance: 1000, currency: "SGD", accent: "#9fe1c2", ...over,
+});
+
+describe("currency conversion", () => {
+  it("passes a base-currency amount through untouched", () => {
+    expect(convertToBase(1000, "SGD", "SGD", {})).toBe(1000);
+  });
+
+  it("applies a user-set rate", () => {
+    expect(convertToBase(100, "USD", "SGD", { USD: 1.35 })).toBeCloseTo(135, 6);
+  });
+
+  it("refuses to guess when no rate is set, rather than assuming parity", () => {
+    expect(convertToBase(100, "USD", "SGD", {})).toBeNull();
+    expect(convertToBase(100, "USD", "SGD", { USD: 0 })).toBeNull();
+    expect(convertToBase(100, "USD", "SGD", { USD: Number.NaN })).toBeNull();
+  });
+
+  it("recognises only supported codes", () => {
+    expect(isCurrencyCode("SGD")).toBe(true);
+    expect(isCurrencyCode("XYZ")).toBe(false);
+    expect(isCurrencyCode(42)).toBe(false);
+  });
+});
+
+describe("aggregating across currencies", () => {
+  it("converts every balance into the base currency", () => {
+    const result = sumAccountsInBase(
+      [acct({ id: "a1", balance: 1000, currency: "SGD" }), acct({ id: "a2", balance: 100, currency: "USD" })],
+      "SGD",
+      { USD: 1.35 },
+    );
+    expect(result.total).toBeCloseTo(1135, 6);
+    expect(result.missing).toEqual([]);
+  });
+
+  it("excludes an unconvertible balance and names the currency instead of silently adding it", () => {
+    const accounts = [acct({ id: "a1", balance: 1000, currency: "SGD" }), acct({ id: "a2", balance: 100, currency: "USD" })];
+    const result = sumAccountsInBase(accounts, "SGD", {});
+    expect(result.total).toBe(1000);
+    expect(result.missing).toEqual(["USD"]);
+    expect(unratedCurrencies(accounts, "SGD", {})).toEqual(["USD"]);
+  });
+
+  it("prices a transaction in the currency of the account it belongs to", () => {
+    const accounts = [acct({ id: "a2", currency: "USD" })];
+    const tx: Transaction = { id: "t1", type: "expense", amount: 100, date: "2026-09-01", description: "Hotel", category: "Travel", accountId: "a2", space: "personal", source: "manual" };
+    expect(sumTransactionsInBase([tx], accounts, "SGD", { USD: 1.35 }).total).toBeCloseTo(135, 6);
+  });
+});
+
+describe("showing an account's own currency", () => {
+  // Intl separates a currency code from the number with a non-breaking space.
+  const shown = (value: number, currency: Parameters<typeof formatAccountBalance>[1], base: Parameters<typeof formatAccountBalance>[2]) =>
+    formatAccountBalance(value, currency, base).replace(/\u00a0/g, " ");
+
+  it("uses the plain symbol for the currency the user reports in", () => {
+    expect(shown(100, "SGD", "SGD")).toBe("$100.00");
+  });
+
+  it("names a foreign currency, because en-SG renders SGD and USD identically", () => {
+    expect(shown(100, "USD", "SGD")).toBe("USD 100.00");
+    expect(shown(100, "USD", "SGD")).not.toBe(shown(100, "SGD", "SGD"));
+  });
+
+  it("follows the reporting currency rather than assuming SGD is local", () => {
+    expect(shown(100, "USD", "USD")).toBe("$100.00");
+    expect(shown(100, "SGD", "USD")).toBe("SGD 100.00");
   });
 });

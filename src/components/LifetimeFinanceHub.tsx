@@ -2,6 +2,7 @@
 
 import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertTriangle,
   ArrowDownLeft,
   ArrowLeftRight,
   ArrowUpRight,
@@ -69,6 +70,18 @@ import {
   createEmptyFinanceData,
   expenseCategories,
   formatDate,
+  CURRENCIES,
+  DEFAULT_CURRENCY,
+  type CurrencyCode,
+  type FxRates,
+  buildHorizon,
+  formatAccountBalance,
+  sumAccountsInBase,
+  sumTransactionsInBase,
+  unratedCurrencies,
+  type HorizonItem,
+  countOverdue,
+  dueStatus,
   formatCoverMonths,
   formatMoney,
   inScope,
@@ -76,6 +89,7 @@ import {
   monthKey,
   monthlyEquivalent,
   normalizeFinanceData,
+  todayIso,
   uid,
 } from "@/lib/finance";
 import { ImportReport, describeImport, importTransactions } from "@/lib/import";
@@ -104,9 +118,8 @@ const togetherScopeOption: { id: ViewScope; label: string; shortLabel: string; i
 
 const accountAccents = ["mint", "sky", "coral", "violet", "lime", "gold"];
 
-function todayIso() {
-  return new Date().toISOString().slice(0, 10);
-}
+/** Base currency plus the user's own rates, threaded to any view that adds balances together. */
+type FxContext = { base: CurrencyCode; rates: FxRates };
 
 type Viewer = {
   userId: string;
@@ -336,13 +349,19 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
     [scopedTransactions, selectedMonth],
   );
 
-  const netWorth = scopedAccounts.reduce((sum, account) => sum + account.balance, 0);
-  const monthIncome = monthTransactions
-    .filter((transaction) => transaction.type === "income")
-    .reduce((sum, transaction) => sum + transaction.amount, 0);
-  const monthSpending = monthTransactions
-    .filter((transaction) => transaction.type === "expense")
-    .reduce((sum, transaction) => sum + transaction.amount, 0);
+  // Totals are stated in the base currency. Anything with no rate set is excluded and
+  // named in `unratedInUse`, so the interface can say what a total leaves out.
+  const baseCurrency = data.profile.baseCurrency || DEFAULT_CURRENCY;
+  const fxRates = useMemo(() => data.profile.fxRates || {}, [data.profile.fxRates]);
+  const unratedInUse = useMemo(
+    () => unratedCurrencies(scopedAccounts, baseCurrency, fxRates),
+    [scopedAccounts, baseCurrency, fxRates],
+  );
+
+  const fx: FxContext = useMemo(() => ({ base: baseCurrency, rates: fxRates }), [baseCurrency, fxRates]);
+  const netWorth = sumAccountsInBase(scopedAccounts, baseCurrency, fxRates).total;
+  const monthIncome = sumTransactionsInBase(monthTransactions.filter((transaction) => transaction.type === "income"), data.accounts, baseCurrency, fxRates).total;
+  const monthSpending = sumTransactionsInBase(monthTransactions.filter((transaction) => transaction.type === "expense"), data.accounts, baseCurrency, fxRates).total;
   const monthCashFlow = monthIncome - monthSpending;
   const savingsRate = monthIncome > 0 ? (monthCashFlow / monthIncome) * 100 : 0;
   const activeRecurringCost = scopedRecurring
@@ -909,6 +928,13 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
         </header>
 
         <main className="content">
+          {unratedInUse.length > 0 && (
+            <div className="fx-warning" role="status">
+              <AlertTriangle size={17} />
+              <span>Totals leave out your {unratedInUse.join(" and ")} {unratedInUse.length === 1 ? "balance" : "balances"} — no exchange rate is set yet.</span>
+              <button type="button" className="secondary-button" onClick={() => setModal("settings")}>Set a rate</button>
+            </div>
+          )}
           <div className="view-stage" key={`${activeView}-${activeView === "money" ? moneySection : "main"}`}>
           {activeView === "today" && (
             <Overview
@@ -928,6 +954,9 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
               transactions={scopedTransactions}
               goals={scopedGoals}
               recurring={scopedRecurring}
+              events={scopedEvents}
+              fx={fx}
+              onPostRecurring={postRecurring}
               categoryTotals={categoryTotals}
               onAdd={() => openNewTransaction()}
               onView={navigateTo}
@@ -948,6 +977,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
 
           {activeView === "money" && (
             <MoneyView
+              fx={fx}
               section={moneySection}
               setSection={setMoneySection}
               accounts={scopedAccounts}
@@ -1018,7 +1048,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
           )}
 
           {activeView === "together" && hasTogether && (
-            <TogetherView data={data} accounts={scopedAccounts} members={householdMembers} viewerEmail={viewer.email} onSetup={() => setModal("household")} onEditAccount={openEditAccount} />
+            <TogetherView data={data} accounts={scopedAccounts} fx={fx} members={householdMembers} viewerEmail={viewer.email} onSetup={() => setModal("household")} onEditAccount={openEditAccount} />
           )}
           </div>
         </main>
@@ -1038,14 +1068,14 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
       <button className="mobile-fab voice-fab" onClick={() => setModal("capture")} aria-label="Capture with voice or text"><Mic size={24} /></button>
 
       {modal === "capture" && <CaptureModal accounts={data.accounts} profile={data.profile} scope={scope} qwenConfigured={qwenConfigured} onClose={() => setModal(null)} onTransaction={(draft) => openCaptureDraft(draft)} onPlan={(event) => savePlannedEvent(event)} onAsk={(prompt) => { setModal(null); setActiveView("coach"); window.setTimeout(() => window.dispatchEvent(new CustomEvent("lifetime-coach-question", { detail: prompt })), 100); }} onProfile={(profile) => setData((current) => ({ ...current, profile }))} />}
-      {modal === "transaction" && <TransactionModal initial={editingTransaction || captureDraft} accounts={data.accounts} scope={scope} onNeedAccount={() => openRequiredAccount("transaction")} onClose={() => { setModal(null); setEditingTransaction(null); setEditingInbox(null); setCaptureDraft(null); }} onSubmit={saveTransaction} onDelete={editingTransaction ? () => deleteTransaction(editingTransaction) : undefined} />}
-      {modal === "account" && <AccountModal initial={editingAccount} scope={scope} canShare={hasTogether} profileName={data.profile.name} partnerName={data.profile.partnerName} onClose={() => { setModal(null); setEditingAccount(null); setAfterAccount(null); setCaptureDraft(null); }} onSubmit={saveAccount} onDelete={editingAccount ? () => deleteAccount(editingAccount) : undefined} />}
+      {modal === "transaction" && <TransactionModal initial={editingTransaction || captureDraft} accounts={data.accounts} scope={scope} fx={fx} onNeedAccount={() => openRequiredAccount("transaction")} onClose={() => { setModal(null); setEditingTransaction(null); setEditingInbox(null); setCaptureDraft(null); }} onSubmit={saveTransaction} onDelete={editingTransaction ? () => deleteTransaction(editingTransaction) : undefined} />}
+      {modal === "account" && <AccountModal initial={editingAccount} scope={scope} canShare={hasTogether} profileName={data.profile.name} partnerName={data.profile.partnerName} defaultCurrency={baseCurrency} onClose={() => { setModal(null); setEditingAccount(null); setAfterAccount(null); setCaptureDraft(null); }} onSubmit={saveAccount} onDelete={editingAccount ? () => deleteAccount(editingAccount) : undefined} />}
       {modal === "goal" && <GoalModal initial={editingGoal} scope={scope} canShare={hasTogether} onClose={() => { setModal(null); setEditingGoal(null); }} onSubmit={saveGoal} onDelete={editingGoal ? () => deleteGoal(editingGoal) : undefined} />}
       {modal === "event" && <PlannedEventModal initial={editingEvent} scope={scope} canShare={hasTogether} onClose={() => { setModal(null); setEditingEvent(null); }} onSubmit={savePlannedEvent} onDelete={editingEvent ? () => deletePlannedEvent(editingEvent) : undefined} />}
       {modal === "recurring" && <RecurringModal initial={editingRecurring} scope={scope} accounts={data.accounts} onNeedAccount={() => openRequiredAccount("recurring")} onClose={() => { setModal(null); setEditingRecurring(null); }} onSubmit={saveRecurring} onDelete={editingRecurring ? () => deleteRecurring(editingRecurring) : undefined} />}
       {modal === "import" && <ImportModal data={data} scope={scope} onNeedAccount={() => openRequiredAccount("import")} onClose={() => setModal(null)} setData={setData} onStage={stageInbox} notify={notify} />}
       {modal === "household" && <HouseholdModal profile={data.profile} members={householdMembers} viewerEmail={viewer.email} inviteUrl={inviteUrl} onClose={() => setModal(null)} onSubmit={saveHousehold} onManage={confirmTogetherAction} notify={notify} />}
-      {modal === "settings" && <SettingsModal profile={data.profile} hasTogether={hasTogether} onClose={() => setModal(null)} onProfile={(profile) => setData((current) => ({ ...current, profile }))} onTogether={() => setModal("household")} onExport={exportData} onRestore={restoreBackup} onRestoreVersion={requestVersionRestore} onClear={() => { setModal(null); clearWorkspace(); }} onDeleteAccount={requestAccountDeletion} />}
+      {modal === "settings" && <SettingsModal profile={data.profile} currenciesInUse={[...new Set(data.accounts.map((account) => account.currency))]} hasTogether={hasTogether} onClose={() => setModal(null)} onProfile={(profile) => setData((current) => ({ ...current, profile }))} onTogether={() => setModal("household")} onExport={exportData} onRestore={restoreBackup} onRestoreVersion={requestVersionRestore} onClear={() => { setModal(null); clearWorkspace(); }} onDeleteAccount={requestAccountDeletion} />}
 
       {confirmation && <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} onConfirm={() => { const action = confirmation.onConfirm; setConfirmation(null); action(); }} />}
 
@@ -1079,6 +1109,14 @@ function FirstRunGuide({ onAddAccount, onHousehold, onCapture }: { onAddAccount:
   );
 }
 
+/** Plain language for how far away something is, so a date tile never has to be decoded. */
+function describeDue(item: HorizonItem) {
+  if (item.status === "overdue") return item.daysAway === -1 ? "1 day overdue" : `${Math.abs(item.daysAway)} days overdue`;
+  if (item.status === "today") return "Due today";
+  if (item.daysAway === 1) return "Due tomorrow";
+  return `In ${item.daysAway} days`;
+}
+
 function Overview({
   scope,
   scopeLabel,
@@ -1096,6 +1134,9 @@ function Overview({
   transactions,
   goals,
   recurring,
+  events,
+  fx,
+  onPostRecurring,
   categoryTotals,
   onAdd,
   onView,
@@ -1128,6 +1169,9 @@ function Overview({
   transactions: Transaction[];
   goals: Goal[];
   recurring: RecurringItem[];
+  events: PlannedEvent[];
+  fx: FxContext;
+  onPostRecurring: (item: RecurringItem) => void;
   categoryTotals: [string, number][];
   onAdd: () => void;
   onView: (view: ViewId, section?: MoneySection) => void;
@@ -1145,6 +1189,8 @@ function Overview({
   onHousehold: () => void;
 }) {
   const today = new Date();
+  const horizon = useMemo(() => buildHorizon(recurring, events), [recurring, events]);
+  const overdueCount = countOverdue(horizon);
   const firstName = profileName.split(" ")[0];
   const scopeCopy = scope === "all" ? "the money you manage alone and together" : "your personal foundation";
   const goal = goals[0];
@@ -1209,7 +1255,7 @@ function Overview({
         <section className="panel accounts-panel">
           <PanelHeading eyebrow="Accounts" title="Where your money lives" action="See all" onAction={() => onView("money", "accounts")} />
           <div className="account-list">
-            {accounts.length ? accounts.slice(0, 4).map((account) => <AccountRow key={account.id} account={account} />) : <EmptyState icon={<WalletCards />} title="Add your first account" copy="Start with a bank, card, cash, or investment account." />}
+            {accounts.length ? accounts.slice(0, 4).map((account) => <AccountRow key={account.id} account={account} fx={fx} />) : <EmptyState icon={<WalletCards />} title="Add your first account" copy="Start with a bank, card, cash, or investment account." />}
           </div>
         </section>
 
@@ -1255,15 +1301,29 @@ function Overview({
         </section>
 
         <section className="panel recurring-panel">
-          <PanelHeading eyebrow="On the horizon" title="Upcoming payments" action="Manage" onAction={() => onView("future")} />
+          <PanelHeading
+            eyebrow={overdueCount ? `${overdueCount} needs recording` : "On the horizon"}
+            title="What's coming"
+            action="Manage"
+            onAction={() => onView("future")}
+          />
           <div className="upcoming-list">
-            {recurring.some((item) => item.active) ? recurring.filter((item) => item.active).slice(0, 3).map((item) => (
-              <div key={item.id}>
-                <span className="date-tile"><strong>{new Date(`${item.nextDate}T12:00:00`).getDate()}</strong><small>{new Date(`${item.nextDate}T12:00:00`).toLocaleDateString("en-SG", { month: "short" })}</small></span>
-                <span className="upcoming-name"><strong>{item.name}</strong><small>{item.cadence}</small></span>
-                <strong>{formatMoney(item.amount)}</strong>
-              </div>
-            )) : <EmptyState icon={<Repeat2 />} title="Nothing scheduled" copy="Add recurring bills to see what’s coming." />}
+            {horizon.length ? horizon.slice(0, 4).map((item) => {
+              const source = item.kind === "recurring" ? recurring.find((candidate) => candidate.id === item.sourceId) : null;
+              return (
+                <div key={item.key} className={item.status === "overdue" ? "upcoming-row is-overdue" : "upcoming-row"}>
+                  <span className="date-tile"><strong>{new Date(`${item.date}T12:00:00`).getDate()}</strong><small>{new Date(`${item.date}T12:00:00`).toLocaleDateString("en-SG", { month: "short" })}</small></span>
+                  <span className="upcoming-name">
+                    <strong>{item.name}</strong>
+                    <small><span className="lead">{item.kind === "event" ? "Planned event" : item.detail}</span> · {describeDue(item)}</small>
+                  </span>
+                  <strong className="upcoming-amount">{formatMoney(item.amount)}</strong>
+                  {source && item.status !== "scheduled"
+                    ? <button className="paid-item-button" onClick={() => onPostRecurring(source)}>Mark paid</button>
+                    : <span className="upcoming-spacer" />}
+                </div>
+              );
+            }) : <EmptyState icon={<Repeat2 />} title="Nothing scheduled" copy="Add a recurring bill or plan an event to see what's coming." />}
           </div>
         </section>
       </div>
@@ -1271,7 +1331,8 @@ function Overview({
   );
 }
 
-function MoneyView({ section, setSection, accounts, allAccounts, transactions, monthTransactions, plans, inbox, netWorth, monthIncome, monthSpending, search, setSearch, onAdd, onImport, onApproveInbox, onDismissInbox, onEditInbox, onDelete, onEditTransaction, onAddAccount, onEditAccount, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod, onSavePlan, onExport, onRestore, onReset, scope }: {
+function MoneyView({ section, setSection, fx, accounts, allAccounts, transactions, monthTransactions, plans, inbox, netWorth, monthIncome, monthSpending, search, setSearch, onAdd, onImport, onApproveInbox, onDismissInbox, onEditInbox, onDelete, onEditTransaction, onAddAccount, onEditAccount, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod, onSavePlan, onExport, onRestore, onReset, scope }: {
+  fx: FxContext;
   section: MoneySection;
   setSection: (section: MoneySection) => void;
   accounts: Account[];
@@ -1332,7 +1393,7 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
 
       {section === "snapshot" && <>
         <section className="money-snapshot-grid">
-          <div className="money-total-card"><p className="eyebrow">Net worth</p><strong>{formatMoney(netWorth)}</strong><span>Assets {formatMoney(assets.reduce((sum, item) => sum + item.balance, 0))} · Liabilities {formatMoney(Math.abs(liabilities.reduce((sum, item) => sum + item.balance, 0)))}</span></div>
+          <div className="money-total-card"><p className="eyebrow">Net worth</p><strong>{formatMoney(netWorth)}</strong><span>Assets {formatMoney(sumAccountsInBase(assets, fx.base, fx.rates).total)} · Liabilities {formatMoney(Math.abs(sumAccountsInBase(liabilities, fx.base, fx.rates).total))}</span></div>
           <div className="money-mini-card"><span><ArrowDownLeft size={17} /> Income</span><strong>{formatMoney(monthIncome)}</strong><small>{selectedMonthLabel}</small></div>
           <div className="money-mini-card"><span><ArrowUpRight size={17} /> Spending</span><strong>{formatMoney(monthSpending)}</strong><small>Transfers excluded</small></div>
           <button className="money-mini-card actionable-card" onClick={() => setSection("activity")}><span><ArrowLeftRight size={17} /> Transactions</span><strong>{monthTransactions.length}</strong><small>{selectedMonthLabel}</small></button>
@@ -1341,7 +1402,7 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
           <section className="panel accounts-panel">
             <PanelHeading eyebrow="Balance sheet" title="Assets and liabilities" action="Manage" onAction={() => setSection("accounts")} />
             <div className="account-list">
-              {accounts.slice(0, 7).map((account) => <button className="account-edit-row" key={account.id} onClick={() => onEditAccount(account)}><AccountRow account={account} /></button>)}
+              {accounts.slice(0, 7).map((account) => <button className="account-edit-row" key={account.id} onClick={() => onEditAccount(account)}><AccountRow account={account} fx={fx} /></button>)}
               {!accounts.length && <EmptyState icon={<WalletCards />} title="Build your balance sheet" copy="Add cash, cards, CPF, investments, property, insurance values and loans." />}
             </div>
           </section>
@@ -1353,8 +1414,8 @@ function MoneyView({ section, setSection, accounts, allAccounts, transactions, m
         <section className="data-controls"><div><p className="eyebrow">Your data</p><strong>Back up, restore, or start over.</strong><span>Restore replaces this workspace from a Lifetime JSON backup. Clearing preserves your profile and Together setup.</span></div><div><button className="secondary-button" onClick={onExport}><Download size={16} /> Download backup</button><label className="secondary-button file-button"><Upload size={16} /> Restore backup<input className="file-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) onRestore(file); event.target.value = ""; }} /></label><button className="secondary-button danger-button" onClick={onReset}><Trash2 size={16} /> Clear workspace</button></div></section>
       </>}
 
-      {section === "activity" && <ActivityView transactions={transactions} accounts={allAccounts} search={search} setSearch={setSearch} onAdd={onAdd} onImport={onImport} onDelete={onDelete} onEdit={onEditTransaction} selectedMonthLabel={selectedMonthLabel} selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} shiftMonth={shiftMonth} mode={mode} setMode={setMode} filter={filter} setFilter={setFilter} period={period} setPeriod={setPeriod} />}
-      {section === "accounts" && <AccountsView accounts={accounts} netWorth={netWorth} onAdd={onAddAccount} onEdit={onEditAccount} />}
+      {section === "activity" && <ActivityView transactions={transactions} accounts={allAccounts} fx={fx} search={search} setSearch={setSearch} onAdd={onAdd} onImport={onImport} onDelete={onDelete} onEdit={onEditTransaction} selectedMonthLabel={selectedMonthLabel} selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} shiftMonth={shiftMonth} mode={mode} setMode={setMode} filter={filter} setFilter={setFilter} period={period} setPeriod={setPeriod} />}
+      {section === "accounts" && <AccountsView accounts={accounts} netWorth={netWorth} fx={fx} onAdd={onAddAccount} onEdit={onEditAccount} />}
       {section === "inbox" && <InboxView inbox={inbox} accounts={allAccounts} onImport={onImport} onApprove={onApproveInbox} onDismiss={onDismissInbox} onEdit={onEditInbox} />}
       {section === "plan" && <section className="panel plan-editor-panel"><PanelHeading eyebrow="A plan, not a punishment" title="Monthly spending boundaries" /><SpendingPlanList plans={plans} transactions={monthTransactions} onSave={onSavePlan} scope={scope} /></section>}
     </div>
@@ -1487,18 +1548,19 @@ function CoachView({ data, scope, forecast, categoryTotals, qwenConfigured, onCa
   </div>;
 }
 
-function TogetherView({ data, accounts, members, viewerEmail, onSetup, onEditAccount }: { data: FinanceData; accounts: Account[]; members: Array<{ email: string; display_name: string; role: string; status: string }>; viewerEmail: string; onSetup: () => void; onEditAccount: (account: Account) => void }) {
+function TogetherView({ data, accounts, fx, members, viewerEmail, onSetup, onEditAccount }: { data: FinanceData; accounts: Account[]; fx: FxContext; members: Array<{ email: string; display_name: string; role: string; status: string }>; viewerEmail: string; onSetup: () => void; onEditAccount: (account: Account) => void }) {
   const sharedAccounts = data.accounts.filter((item) => item.space === "household");
   const personalAccounts = data.accounts.filter((item) => item.space === "personal");
   const visibleMembers = members.length ? members : [{ email: viewerEmail, display_name: data.profile.name, role: "owner", status: "active" }, ...(data.profile.partnerEmail ? [{ email: data.profile.partnerEmail, display_name: data.profile.partnerName, role: "member", status: "pending" }] : [])];
   return <div className="page-stack"><PageHeading eyebrow="Private by default, shared on purpose" title={data.profile.householdName || "Together"} copy="Together combines your private records with records deliberately shared between members. The other person never receives your Personal records."><button className="primary-button" onClick={onSetup}><Settings2 size={17} /> Manage Together</button></PageHeading>
-    <section className="household-hero"><div className="household-orbits"><span className="avatar">{data.profile.name.slice(0, 1)}</span><span className="avatar partner-avatar">{data.profile.partnerName?.slice(0, 1) || "P"}</span></div><div><p className="eyebrow hero-eyebrow">Together, with boundaries</p><h2>{formatMoney(sharedAccounts.reduce((sum, item) => sum + item.balance, 0))} shared net worth</h2><p>{sharedAccounts.length} shared accounts · {personalAccounts.length} personal accounts stay private in each member’s Personal view.</p></div></section>
+    <section className="household-hero"><div className="household-orbits"><span className="avatar">{data.profile.name.slice(0, 1)}</span><span className="avatar partner-avatar">{data.profile.partnerName?.slice(0, 1) || "P"}</span></div><div><p className="eyebrow hero-eyebrow">Together, with boundaries</p><h2>{formatMoney(sumAccountsInBase(sharedAccounts, fx.base, fx.rates).total)} shared net worth</h2><p>{sharedAccounts.length} shared accounts · {personalAccounts.length} personal accounts stay private in each member’s Personal view.</p></div></section>
     <div className="dashboard-grid"><section className="panel members-panel"><PanelHeading eyebrow="People and access" title="Together members" action="Manage" onAction={onSetup} /><div className="member-list">{visibleMembers.map((member) => <div key={member.email}><span className="avatar">{(member.display_name || member.email).slice(0, 1).toUpperCase()}</span><span><strong>{member.display_name || member.email}</strong><small>{member.email}</small></span><span className={member.status === "active" ? "member-status active-member" : "member-status"}>{member.status === "active" ? "Active" : "Invite pending"}</span><small>{member.role}</small></div>)}</div><div className="info-note"><ShieldCheck size={17} /><span>An invitation activates only for the same verified Google or Apple email. Database access rules keep every Personal space owner-only.</span></div></section><section className="panel access-panel"><PanelHeading eyebrow="Visibility" title="What the other person can see" /><div className="privacy-map"><div><span>Personal</span><strong>{personalAccounts.length} accounts</strong><small>Only you can read these records.</small></div><div><span>Shared in Together</span><strong>{sharedAccounts.length} accounts</strong><small>Visible to active Together members.</small></div></div><p className="privacy-caption">Your Together dashboard currently combines {accounts.length} accounts visible to you, without counting transfers as income or spending.</p></section></div>
-    <section className="panel household-accounts"><PanelHeading eyebrow="Shared balance sheet" title="Accounts shared in Together" /><div className="account-card-grid">{sharedAccounts.map((account) => <AccountCard key={account.id} account={account} onEdit={() => onEditAccount(account)} />)}{!sharedAccounts.length && <EmptyState icon={<Users />} title="Nothing shared yet" copy="Edit an account and set its visibility to Shared in Together." />}</div></section>
+    <section className="panel household-accounts"><PanelHeading eyebrow="Shared balance sheet" title="Accounts shared in Together" /><div className="account-card-grid">{sharedAccounts.map((account) => <AccountCard key={account.id} account={account} fx={fx} onEdit={() => onEditAccount(account)} />)}{!sharedAccounts.length && <EmptyState icon={<Users />} title="Nothing shared yet" copy="Edit an account and set its visibility to Shared in Together." />}</div></section>
   </div>;
 }
 
-function ActivityView({ transactions, accounts, search, setSearch, onAdd, onImport, onDelete, onEdit, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod }: {
+function ActivityView({ transactions, accounts, fx, search, setSearch, onAdd, onImport, onDelete, onEdit, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod }: {
+  fx: FxContext;
   transactions: Transaction[];
   accounts: Account[];
   search: string;
@@ -1522,8 +1584,8 @@ function ActivityView({ transactions, accounts, search, setSearch, onAdd, onImpo
     (result[transaction.date] ||= []).push(transaction);
     return result;
   }, {});
-  const visibleIncome = transactions.filter((transaction) => transaction.type === "income").reduce((sum, transaction) => sum + transaction.amount, 0);
-  const visibleSpending = transactions.filter((transaction) => transaction.type === "expense").reduce((sum, transaction) => sum + transaction.amount, 0);
+  const visibleIncome = sumTransactionsInBase(transactions.filter((transaction) => transaction.type === "income"), accounts, fx.base, fx.rates).total;
+  const visibleSpending = sumTransactionsInBase(transactions.filter((transaction) => transaction.type === "expense"), accounts, fx.base, fx.rates).total;
   const visibleCashFlow = visibleIncome - visibleSpending;
 
   return (
@@ -1606,10 +1668,10 @@ function LedgerTable({ transactions, accounts, onEdit, onDelete }: { transaction
   );
 }
 
-function AccountsView({ accounts, netWorth, onAdd, onEdit }: { accounts: Account[]; netWorth: number; onAdd: () => void; onEdit: (account: Account) => void }) {
-  const liquid = accounts.filter((account) => ["checking", "savings", "cash"].includes(account.type)).reduce((sum, account) => sum + account.balance, 0);
-  const investments = accounts.filter((account) => account.type === "investment").reduce((sum, account) => sum + account.balance, 0);
-  const credit = accounts.filter((account) => account.type === "credit").reduce((sum, account) => sum + Math.abs(Math.min(0, account.balance)), 0);
+function AccountsView({ accounts, netWorth, fx, onAdd, onEdit }: { accounts: Account[]; netWorth: number; fx: FxContext; onAdd: () => void; onEdit: (account: Account) => void }) {
+  const liquid = sumAccountsInBase(accounts.filter((account) => ["checking", "savings", "cash"].includes(account.type)), fx.base, fx.rates).total;
+  const investments = sumAccountsInBase(accounts.filter((account) => account.type === "investment"), fx.base, fx.rates).total;
+  const credit = sumAccountsInBase(accounts.filter((account) => account.type === "credit"), fx.base, fx.rates, (account) => Math.abs(Math.min(0, account.balance))).total;
 
   return (
     <div className="page-stack">
@@ -1625,7 +1687,7 @@ function AccountsView({ accounts, netWorth, onAdd, onEdit }: { accounts: Account
         </div>
       </section>
       <section className="account-card-grid">
-        {accounts.map((account) => <AccountCard key={account.id} account={account} onEdit={() => onEdit(account)} />)}
+        {accounts.map((account) => <AccountCard key={account.id} account={account} fx={fx} onEdit={() => onEdit(account)} />)}
         <button className="add-account-card" onClick={onAdd}><span><Plus size={22} /></span><strong>Add another account</strong><small>Bank, card, cash, or investment</small></button>
       </section>
     </div>
@@ -1676,13 +1738,13 @@ function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAdd
       <div className="section-heading plans-recurring-heading"><div><p className="eyebrow">Predictable spending</p><h2>Recurring payments</h2></div><span>{formatMoney(recurringCost)}/month</span></div>
       <section className="panel recurring-table">
         <div className="recurring-table-head"><span>Payment</span><span>Paid from</span><span>Next date</span><span>Amount</span><span>Actions</span></div>
-        {recurring.map((item) => {
+        {[...recurring].sort((a, b) => a.nextDate.localeCompare(b.nextDate)).map((item) => {
           const account = accounts.find((candidate) => candidate.id === item.accountId);
           return (
             <div className={!item.active ? "recurring-row muted-row" : "recurring-row"} key={item.id}>
               <span className="recurring-main"><i><Repeat2 size={17} /></i><span><strong>{item.name}</strong><small>{item.category} · {item.cadence}</small></span></span>
               <span>{account?.name || "Unknown"}</span>
-              <span>{formatDate(item.nextDate, true)}</span>
+              <span className={item.active && dueStatus(item.nextDate) === "overdue" ? "next-date is-overdue" : "next-date"}>{formatDate(item.nextDate, true)}{item.active && dueStatus(item.nextDate) === "overdue" ? <small>Overdue</small> : null}</span>
               <strong>{formatMoney(item.amount)}</strong>
               <span className="item-actions">{item.active && <button className="paid-item-button" onClick={() => onPostRecurring(item)}>Mark paid</button>}<button className="edit-item-button" onClick={() => onEditRecurring(item)} aria-label={`Edit ${item.name}`}><Edit3 size={16} /></button><button className={item.active ? "status-toggle active" : "status-toggle"} onClick={() => onToggleRecurring(item.id)} aria-label={`${item.active ? "Pause" : "Resume"} ${item.name}`}><i /></button></span>
             </div>
@@ -1731,26 +1793,26 @@ function accountIcon(type: AccountType) {
   return Landmark;
 }
 
-function AccountRow({ account }: { account: Account }) {
+function AccountRow({ account, fx }: { account: Account; fx: FxContext }) {
   const Icon = accountIcon(account.type);
   return (
     <div className="account-row">
       <span className={`account-icon accent-${account.accent}`}><Icon size={18} /></span>
       <span className="account-name"><strong>{account.name}</strong><small>{account.institution}{account.last4 ? ` · •${account.last4}` : ` · ${accountTypeLabels[account.type]}`}</small></span>
       <span className="account-scope">{account.space === "household" ? <Users size={13} /> : <UserRound size={13} />}{account.space === "household" ? "Shared" : "Personal"}</span>
-      <strong className={account.balance < 0 ? "negative-value" : ""}>{formatMoney(account.balance)}</strong>
+      <strong className={account.balance < 0 ? "negative-value" : ""}>{formatAccountBalance(account.balance, account.currency, fx.base)}</strong>
     </div>
   );
 }
 
-function AccountCard({ account, onEdit }: { account: Account; onEdit: () => void }) {
+function AccountCard({ account, fx, onEdit }: { account: Account; fx: FxContext; onEdit: () => void }) {
   const Icon = accountIcon(account.type);
   return (
     <button className={`account-card account-card-${account.accent}`} onClick={onEdit} aria-label={`Edit ${account.name}`}>
       <div className="account-card-top"><span><Icon size={20} /></span><span className="edit-account-pill"><Edit3 size={15} /> Edit</span></div>
       <p>{account.institution}</p>
       <h3>{account.name}</h3>
-      <strong>{formatMoney(account.balance)}</strong>
+      <strong>{formatAccountBalance(account.balance, account.currency, fx.base)}</strong>
       <div><span>{accountTypeLabels[account.type]}{account.last4 ? ` · •${account.last4}` : ""}</span><span>{account.space === "household" ? <Users size={14} /> : <UserRound size={14} />}{account.space === "household" ? "Shared" : account.owner}</span></div>
     </button>
   );
@@ -2065,7 +2127,7 @@ function CaptureModal({ accounts, profile, scope, qwenConfigured, onClose, onTra
   </ModalShell>;
 }
 
-function TransactionModal({ initial, accounts, scope, onNeedAccount, onClose, onSubmit, onDelete }: { initial?: Partial<Transaction> | null; accounts: Account[]; scope: ViewScope; onNeedAccount: () => void; onClose: () => void; onSubmit: (transaction: Transaction) => void; onDelete?: () => void }) {
+function TransactionModal({ initial, accounts, scope, fx, onNeedAccount, onClose, onSubmit, onDelete }: { initial?: Partial<Transaction> | null; accounts: Account[]; scope: ViewScope; fx: FxContext; onNeedAccount: () => void; onClose: () => void; onSubmit: (transaction: Transaction) => void; onDelete?: () => void }) {
   const defaultAccount = accounts.find((account) => account.space === (scope === "all" ? "personal" : scope)) || accounts[0];
   const [type, setType] = useState<TransactionType>(initial?.type || "expense");
   const [amount, setAmount] = useState(initial?.amount != null ? String(initial.amount) : "");
@@ -2114,9 +2176,9 @@ function TransactionModal({ initial, accounts, scope, onNeedAccount, onClose, on
         <label className="amount-field"><span>S$</span><input autoFocus required inputMode="decimal" type="number" min="0" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" /></label>
         <div className="form-grid">
           <label className="field full-field"><span>{type === "income" ? "Source" : type === "transfer" ? "Transfer note" : "Merchant or description"}</span><input required value={description} onChange={(event) => setDescription(event.target.value)} placeholder={type === "transfer" ? "Move to savings" : "What was this for?"} /></label>
-          <label className="field"><span>{type === "income" ? "Paid into" : type === "transfer" ? "From account" : "Paid from"}</span><select value={accountId} onChange={(event) => setAccountId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {formatMoney(account.balance)}</option>)}</select></label>
+          <label className="field"><span>{type === "income" ? "Paid into" : type === "transfer" ? "From account" : "Paid from"}</span><select value={accountId} onChange={(event) => setAccountId(event.target.value)}>{accounts.map((account) => <option key={account.id} value={account.id}>{account.name} · {formatAccountBalance(account.balance, account.currency, fx.base)}</option>)}</select></label>
           {type === "transfer" ? (
-            <label className="field"><span>To account</span><select required value={transferAccountId} onChange={(event) => setTransferAccountId(event.target.value)}><option value="">Choose destination</option>{accounts.filter((account) => account.id !== accountId).map((account) => <option key={account.id} value={account.id}>{account.name} · {formatMoney(account.balance)}</option>)}</select></label>
+            <label className="field"><span>To account</span><select required value={transferAccountId} onChange={(event) => setTransferAccountId(event.target.value)}><option value="">Choose destination</option>{accounts.filter((account) => account.id !== accountId).map((account) => <option key={account.id} value={account.id}>{account.name} · {formatAccountBalance(account.balance, account.currency, fx.base)}</option>)}</select></label>
           ) : type === "expense" ? (
             <label className="field"><span>Category</span><select value={category} onChange={(event) => setCategory(event.target.value)}>{expenseCategories.map((item) => <option key={item}>{item}</option>)}</select></label>
           ) : <label className="field"><span>Category</span><input value="Income" disabled /></label>}
@@ -2131,20 +2193,21 @@ function TransactionModal({ initial, accounts, scope, onNeedAccount, onClose, on
   );
 }
 
-function AccountModal({ initial, scope, canShare, profileName, partnerName, onClose, onSubmit, onDelete }: { initial?: Account | null; scope: ViewScope; canShare: boolean; profileName: string; partnerName: string; onClose: () => void; onSubmit: (account: Account) => void; onDelete?: () => void }) {
+function AccountModal({ initial, scope, canShare, profileName, partnerName, defaultCurrency, onClose, onSubmit, onDelete }: { initial?: Account | null; scope: ViewScope; canShare: boolean; profileName: string; partnerName: string; defaultCurrency: CurrencyCode; onClose: () => void; onSubmit: (account: Account) => void; onDelete?: () => void }) {
   const [name, setName] = useState(initial?.name || "");
   const [institution, setInstitution] = useState(initial?.institution || "");
   const [type, setType] = useState<AccountType>(initial?.type || "checking");
   const [balance, setBalance] = useState(initial ? String(initial.balance) : "");
   const [space, setSpace] = useState<SpaceId>(initial?.space || (scope === "all" ? "household" : "personal"));
   const [last4, setLast4] = useState(initial?.last4 || "");
+  const [currency, setCurrency] = useState<CurrencyCode>(initial?.currency || defaultCurrency);
 
   function submit(event: FormEvent) {
     event.preventDefault();
     const parsed = Number(balance);
     if (!name.trim() || !institution.trim() || !Number.isFinite(parsed)) return;
     const normalizedBalance = ["credit", "loan"].includes(type) && parsed > 0 ? -parsed : parsed;
-    onSubmit({ id: initial?.id || uid("acct"), name: name.trim(), institution: institution.trim(), type, balance: normalizedBalance, space, owner: space === "household" ? `${profileName} + ${partnerName}` : profileName, currency: initial?.currency || "SGD", last4: last4.slice(-4), accent: initial?.accent || accountAccents[Math.floor(Math.random() * accountAccents.length)] });
+    onSubmit({ id: initial?.id || uid("acct"), name: name.trim(), institution: institution.trim(), type, balance: normalizedBalance, space, owner: space === "household" ? `${profileName} + ${partnerName}` : profileName, currency, last4: last4.slice(-4), accent: initial?.accent || accountAccents[Math.floor(Math.random() * accountAccents.length)] });
   }
 
   return (
@@ -2155,6 +2218,7 @@ function AccountModal({ initial, scope, canShare, profileName, partnerName, onCl
           <label className="field"><span>Institution</span><input required value={institution} onChange={(event) => setInstitution(event.target.value)} placeholder="DBS, HSBC, Revolut…" /></label>
           <label className="field"><span>Account type</span><select value={type} onChange={(event) => setType(event.target.value as AccountType)}>{Object.entries(accountTypeLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
           <label className="field"><span>{["credit", "loan"].includes(type) ? "Amount owed" : "Current value or balance"}</span><input required type="number" step="0.01" value={balance} onChange={(event) => setBalance(event.target.value)} placeholder="0.00" /></label>
+          <label className="field"><span>Currency</span><select value={currency} onChange={(event) => setCurrency(event.target.value as CurrencyCode)}>{CURRENCIES.map((code) => <option key={code} value={code}>{code}</option>)}</select></label>
           <label className="field"><span>Visibility</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Private to me</option>{canShare && <option value="household">Shared in Together</option>}</select></label>
           <label className="field"><span>Last four digits (optional)</span><input maxLength={4} inputMode="numeric" value={last4} onChange={(event) => setLast4(event.target.value.replace(/\D/g, ""))} placeholder="2841" /></label>
         </div>
@@ -2164,9 +2228,12 @@ function AccountModal({ initial, scope, canShare, profileName, partnerName, onCl
   );
 }
 
-function SettingsModal({ profile, hasTogether, onClose, onProfile, onTogether, onExport, onRestore, onRestoreVersion, onClear, onDeleteAccount }: { profile: FinanceData["profile"]; hasTogether: boolean; onClose: () => void; onProfile: (profile: FinanceData["profile"]) => void; onTogether: () => void; onExport: () => void; onRestore: (file: File) => void; onRestoreVersion: (entry: RecoveryEntry) => void; onClear: () => void; onDeleteAccount: () => void }) {
+function SettingsModal({ profile, hasTogether, currenciesInUse, onClose, onProfile, onTogether, onExport, onRestore, onRestoreVersion, onClear, onDeleteAccount }: { profile: FinanceData["profile"]; hasTogether: boolean; currenciesInUse: CurrencyCode[]; onClose: () => void; onProfile: (profile: FinanceData["profile"]) => void; onTogether: () => void; onExport: () => void; onRestore: (file: File) => void; onRestoreVersion: (entry: RecoveryEntry) => void; onClear: () => void; onDeleteAccount: () => void }) {
   const { request, publicBaseUrl } = useLifetimeApi();
   const [name, setName] = useState(profile.name);
+  const [baseCurrency, setBaseCurrency] = useState<CurrencyCode>(profile.baseCurrency || DEFAULT_CURRENCY);
+  const [rates, setRates] = useState<FxRates>(profile.fxRates || {});
+  const foreignHeld = currenciesInUse.filter((code) => code !== baseCurrency);
   const [historyState, setHistoryState] = useState<"loading" | "ready" | "unavailable" | "error">("loading");
   const [history, setHistory] = useState<RecoveryEntry[]>([]);
   useEffect(() => {
@@ -2184,12 +2251,52 @@ function SettingsModal({ profile, hasTogether, onClose, onProfile, onTogether, o
   function submit(event: FormEvent) {
     event.preventDefault();
     if (!name.trim()) return;
-    onProfile({ ...profile, name: name.trim() });
+    const changedRates = JSON.stringify(rates) !== JSON.stringify(profile.fxRates || {});
+    onProfile({
+      ...profile,
+      name: name.trim(),
+      baseCurrency,
+      fxRates: rates,
+      fxUpdatedAt: changedRates ? todayIso() : profile.fxUpdatedAt,
+    });
     onClose();
   }
   return <ModalShell eyebrow="Preferences and privacy" title="Settings" onClose={onClose}>
     <form className="form-stack" onSubmit={submit}>
       <label className="field"><span>Display name</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
+      <label className="field"><span>Currency you report in</span><select value={baseCurrency} onChange={(event) => setBaseCurrency(event.target.value as CurrencyCode)}>{CURRENCIES.map((code) => <option key={code} value={code}>{code}</option>)}</select></label>
+      {foreignHeld.length > 0 && <section className="settings-section settings-stack fx-section">
+        <div>
+          <strong>Exchange rates</strong>
+          <small>You hold {foreignHeld.join(", ")}. Lifetime has no rate feed, so set these yourself — every total is converted with the numbers you enter here. A balance with no rate is left out of totals rather than counted as {baseCurrency}.</small>
+        </div>
+        <div className="fx-grid">
+          {foreignHeld.map((code) => (
+            <label className="field" key={code}>
+              <span>1 {code} = ? {baseCurrency}</span>
+              <input
+                type="number"
+                step="0.0001"
+                min="0"
+                inputMode="decimal"
+                value={rates[code] ?? ""}
+                placeholder="Not set"
+                onChange={(event) => {
+                  const raw = event.target.value;
+                  setRates((current) => {
+                    const next = { ...current };
+                    const parsed = Number(raw);
+                    if (raw === "" || !Number.isFinite(parsed) || parsed <= 0) delete next[code];
+                    else next[code] = parsed;
+                    return next;
+                  });
+                }}
+              />
+            </label>
+          ))}
+        </div>
+        {profile.fxUpdatedAt && <p className="info-note fx-stamp">Rates last set {formatDate(profile.fxUpdatedAt)}. They do not update on their own.</p>}
+      </section>}
       <label className="check-field settings-check"><input type="checkbox" checked={profile.voiceAiEnabled === true} onChange={(event) => onProfile({ ...profile, voiceAiEnabled: event.target.checked })} /><span><strong>Reliable voice transcription</strong><small>Off by default. When enabled, only recordings you deliberately make are sent to Qwen after you stop recording.</small></span></label>
       <label className="check-field settings-check"><input type="checkbox" checked={profile.aiEnabled === true} onChange={(event) => onProfile({ ...profile, aiEnabled: event.target.checked })} /><span><strong>Private AI Coach</strong><small>Off by default. When enabled, the financial context you choose to ask about is sent to Qwen for a more natural explanation and smarter capture parsing.</small></span></label>
       <section className="settings-section"><div><strong>Together</strong><small>{hasTogether ? "Manage members and shared access." : "Invite a partner or family member when you are ready."}</small></div><button type="button" className="secondary-button" onClick={onTogether}>{hasTogether ? "Manage" : "Set up"}</button></section>

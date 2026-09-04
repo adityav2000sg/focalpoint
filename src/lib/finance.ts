@@ -4,6 +4,68 @@ export type AccountType = "checking" | "savings" | "credit" | "investment" | "ca
 export type TransactionType = "expense" | "income" | "transfer";
 export type TransactionSource = "manual" | "voice" | "sheet" | "bank" | "receipt" | "recurring";
 
+export const CURRENCIES = ["SGD", "USD", "EUR", "GBP", "INR", "AUD", "JPY", "MYR", "HKD", "CNY", "IDR", "THB", "PHP", "KRW", "CAD", "CHF", "NZD", "AED"] as const;
+export type CurrencyCode = (typeof CURRENCIES)[number];
+export const DEFAULT_CURRENCY: CurrencyCode = "SGD";
+
+export function isCurrencyCode(value: unknown): value is CurrencyCode {
+  return typeof value === "string" && (CURRENCIES as readonly string[]).includes(value);
+}
+
+/**
+ * Rates are units of the base currency per 1 unit of the foreign currency, and the user
+ * sets them by hand — there is no rate feed, so a number here is only ever as fresh as
+ * the person who typed it. Returns null when no rate is known, because inventing 1:1
+ * would silently corrupt every total that touches a foreign account.
+ */
+export function convertToBase(amount: number, from: CurrencyCode, base: CurrencyCode, rates: FxRates): number | null {
+  if (from === base) return amount;
+  const rate = rates[from];
+  if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) return null;
+  return amount * rate;
+}
+
+/** Currencies in use by accounts that cannot be converted, so the UI can say so instead of quietly dropping them. */
+export function unratedCurrencies(accounts: Account[], base: CurrencyCode, rates: FxRates): CurrencyCode[] {
+  const missing = accounts
+    .map((account) => account.currency)
+    .filter((code) => code !== base && convertToBase(1, code, base, rates) === null);
+  return [...new Set(missing)];
+}
+
+export type FxRates = Partial<Record<CurrencyCode, number>>;
+
+export interface BaseSum {
+  total: number;
+  /** Currencies present but unconvertible, so a caller can say what the total leaves out. */
+  missing: CurrencyCode[];
+}
+
+/** Sums balances in the base currency, reporting rather than absorbing anything it could not convert. */
+export function sumAccountsInBase(accounts: Account[], base: CurrencyCode, rates: FxRates, pick: (account: Account) => number = (account) => account.balance): BaseSum {
+  const missing = new Set<CurrencyCode>();
+  const total = accounts.reduce((sum, account) => {
+    const converted = convertToBase(pick(account), account.currency, base, rates);
+    if (converted === null) { missing.add(account.currency); return sum; }
+    return sum + converted;
+  }, 0);
+  return { total, missing: [...missing] };
+}
+
+/** A transaction is denominated in its account's currency; without the account it cannot be placed. */
+export function sumTransactionsInBase(transactions: Transaction[], accounts: Account[], base: CurrencyCode, rates: FxRates): BaseSum {
+  const byId = new Map(accounts.map((account) => [account.id, account]));
+  const missing = new Set<CurrencyCode>();
+  const total = transactions.reduce((sum, transaction) => {
+    const account = byId.get(transaction.accountId);
+    const currency = account?.currency || base;
+    const converted = convertToBase(transaction.amount, currency, base, rates);
+    if (converted === null) { missing.add(currency); return sum; }
+    return sum + converted;
+  }, 0);
+  return { total, missing: [...missing] };
+}
+
 export interface Account {
   id: string;
   name: string;
@@ -12,7 +74,7 @@ export interface Account {
   space: SpaceId;
   owner: string;
   balance: number;
-  currency: "SGD";
+  currency: CurrencyCode;
   last4?: string;
   accent: string;
 }
@@ -103,6 +165,9 @@ export interface FinanceData {
     voiceLexicon?: string[];
     aiEnabled?: boolean;
     voiceAiEnabled?: boolean;
+    baseCurrency?: CurrencyCode;
+    fxRates?: FxRates;
+    fxUpdatedAt?: string;
   };
   accounts: Account[];
   transactions: Transaction[];
@@ -162,6 +227,8 @@ export function createEmptyFinanceData({ name, householdName }: { name: string; 
       voiceLexicon: ["PayNow", "DBS", "CPF"],
       aiEnabled: false,
       voiceAiEnabled: false,
+      baseCurrency: DEFAULT_CURRENCY,
+      fxRates: {},
     },
     accounts: [],
     transactions: [],
@@ -182,7 +249,7 @@ export function isFinanceData(input: unknown): input is FinanceData {
   const space = (value: unknown) => value === "personal" || value === "household";
   const profile = candidate.profile;
   if (candidate.version !== 3 || !record(profile) || !text(profile.name) || !text(profile.partnerName) || !text(profile.householdName)) return false;
-  if (!Array.isArray(candidate.accounts) || !candidate.accounts.every((item) => record(item) && text(item.id) && text(item.name) && text(item.institution) && text(item.type) && space(item.space) && text(item.owner) && amount(item.balance) && item.currency === "SGD")) return false;
+  if (!Array.isArray(candidate.accounts) || !candidate.accounts.every((item) => record(item) && text(item.id) && text(item.name) && text(item.institution) && text(item.type) && space(item.space) && text(item.owner) && amount(item.balance) && isCurrencyCode(item.currency))) return false;
   if (!Array.isArray(candidate.transactions) || !candidate.transactions.every((item) => record(item) && text(item.id) && ["expense", "income", "transfer"].includes(String(item.type)) && amount(item.amount) && item.amount > 0 && text(item.date) && text(item.description) && text(item.category) && text(item.accountId) && space(item.space) && text(item.source) && (item.affectsBalance === undefined || typeof item.affectsBalance === "boolean"))) return false;
   if (!Array.isArray(candidate.goals) || !candidate.goals.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.target) && amount(item.current) && text(item.targetDate) && space(item.space) && text(item.icon))) return false;
   if (!Array.isArray(candidate.recurring) || !candidate.recurring.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.amount) && ["monthly", "quarterly", "yearly"].includes(String(item.cadence)) && text(item.nextDate) && text(item.accountId) && text(item.category) && space(item.space) && typeof item.active === "boolean")) return false;
@@ -210,6 +277,81 @@ export function normalizeFinanceData(input: Partial<FinanceData>, fallback: Fina
 
 export function monthlyEquivalent(item: RecurringItem) {
   return item.cadence === "monthly" ? item.amount : item.cadence === "quarterly" ? item.amount / 3 : item.amount / 12;
+}
+
+/** Local calendar date as YYYY-MM-DD, matching how dates are stored on records. */
+export function todayIso() {
+  const now = new Date();
+  return new Date(now.getTime() - now.getTimezoneOffset() * 60_000).toISOString().slice(0, 10);
+}
+
+export type DueStatus = "overdue" | "today" | "soon" | "scheduled";
+
+/** Whole days from `today` to `date`; negative once the date has passed. Compared at midday so a DST shift cannot round a day away. */
+export function daysUntil(date: string, today = todayIso()) {
+  const target = new Date(`${date}T12:00:00`).getTime();
+  const start = new Date(`${today}T12:00:00`).getTime();
+  if (Number.isNaN(target) || Number.isNaN(start)) return 0;
+  return Math.round((target - start) / 86_400_000);
+}
+
+export function dueStatus(date: string, today = todayIso()): DueStatus {
+  const days = daysUntil(date, today);
+  if (days < 0) return "overdue";
+  if (days === 0) return "today";
+  return days <= 7 ? "soon" : "scheduled";
+}
+
+export interface HorizonItem {
+  key: string;
+  sourceId: string;
+  kind: "recurring" | "event";
+  name: string;
+  detail: string;
+  amount: number;
+  date: string;
+  status: DueStatus;
+  daysAway: number;
+}
+
+/**
+ * One chronological list of everything with a date attached — recurring bills and planned
+ * events together. Ordered by date, so whatever needs attention first is genuinely first;
+ * a passed date sorts to the top as overdue rather than disappearing, because an unposted
+ * bill or an unlogged event is exactly the thing that quietly rots the ledger.
+ */
+export function buildHorizon(recurring: RecurringItem[], events: PlannedEvent[], today = todayIso()): HorizonItem[] {
+  const fromRecurring = recurring
+    .filter((item) => item.active)
+    .map<HorizonItem>((item) => ({
+      key: `recurring:${item.id}`,
+      sourceId: item.id,
+      kind: "recurring",
+      name: item.name,
+      detail: item.cadence,
+      amount: item.amount,
+      date: item.nextDate,
+      status: dueStatus(item.nextDate, today),
+      daysAway: daysUntil(item.nextDate, today),
+    }));
+
+  const fromEvents = events.map<HorizonItem>((item) => ({
+    key: `event:${item.id}`,
+    sourceId: item.id,
+    kind: "event",
+    name: item.name,
+    detail: item.kind,
+    amount: item.amount,
+    date: item.date,
+    status: dueStatus(item.date, today),
+    daysAway: daysUntil(item.date, today),
+  }));
+
+  return [...fromRecurring, ...fromEvents].sort((a, b) => a.date.localeCompare(b.date) || a.name.localeCompare(b.name));
+}
+
+export function countOverdue(items: HorizonItem[]) {
+  return items.filter((item) => item.status === "overdue").length;
 }
 
 export function advanceRecurringDate(date: string, cadence: RecurringItem["cadence"]) {
@@ -270,12 +412,20 @@ export interface FinanceForecast {
 export function buildForecast(data: FinanceData, scope: ViewScope): FinanceForecast {
   const accounts = inScope(data.accounts, scope);
   const transactions = inScope(data.transactions, scope).filter((item) => item.type !== "transfer");
+  // Every figure below is stated in the base currency, so amounts are converted before
+  // they are ever added together. An unconvertible amount is left out rather than
+  // treated as if it were already in the base currency.
+  const base = data.profile.baseCurrency || DEFAULT_CURRENCY;
+  const rates = data.profile.fxRates || {};
+  const currencyOf = new Map(data.accounts.map((account) => [account.id, account.currency]));
   const monthTotals = new Map<string, { income: number; spending: number }>();
   transactions.forEach((item) => {
+    const converted = convertToBase(item.amount, currencyOf.get(item.accountId) || base, base, rates);
+    if (converted === null) return;
     const key = monthKey(item.date);
     const value = monthTotals.get(key) || { income: 0, spending: 0 };
-    if (item.type === "income") value.income += item.amount;
-    if (item.type === "expense") value.spending += item.amount;
+    if (item.type === "income") value.income += converted;
+    if (item.type === "expense") value.spending += converted;
     monthTotals.set(key, value);
   });
   // Month keys are YYYY-MM, so sorting them as strings orders them
@@ -292,7 +442,7 @@ export function buildForecast(data: FinanceData, scope: ViewScope): FinanceForec
   const recurringCost = inScope(data.recurring, scope).filter((item) => item.active).reduce((sum, item) => sum + monthlyEquivalent(item), 0);
   // Not floored at zero: spending more than you earn must report as a deficit.
   const monthlySurplus = averageIncome - averageSpending;
-  const liquidBalance = accounts.filter((item) => ["checking", "savings", "cash"].includes(item.type)).reduce((sum, item) => sum + Math.max(0, item.balance), 0);
+  const liquidBalance = sumAccountsInBase(accounts.filter((item) => ["checking", "savings", "cash"].includes(item.type)), base, rates, (item) => Math.max(0, item.balance)).total;
   const emergencyMonths = averageSpending > 0 ? liquidBalance / averageSpending : 0;
   const monthlyGoalCommitments = inScope(data.goals, scope).reduce((sum, goal) => sum + (goal.monthlyContribution || 0), 0);
   const safeToSpend = Math.max(0, monthlySurplus - monthlyGoalCommitments);
@@ -341,11 +491,20 @@ export function formatCoverMonths(months: number) {
   return `${rounded} ${rounded === "1.0" ? "month" : "months"}`;
 }
 
-export function formatMoney(value: number, compact = false) {
+/**
+ * In en-SG both SGD and USD render as "$100.00" under narrowSymbol, so a foreign balance
+ * would be indistinguishable from a local one. Anything outside the reporting currency is
+ * therefore shown with its code.
+ */
+export function formatAccountBalance(value: number, currency: CurrencyCode, base: CurrencyCode) {
+  return formatMoney(value, false, currency, currency === base ? "narrowSymbol" : "code");
+}
+
+export function formatMoney(value: number, compact = false, currency: CurrencyCode = DEFAULT_CURRENCY, display: "narrowSymbol" | "code" = "narrowSymbol") {
   return new Intl.NumberFormat("en-SG", {
     style: "currency",
-    currency: "SGD",
-    currencyDisplay: "narrowSymbol",
+    currency,
+    currencyDisplay: display,
     notation: compact ? "compact" : "standard",
     maximumFractionDigits: compact ? 1 : 2,
   }).format(value);
