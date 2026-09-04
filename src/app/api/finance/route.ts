@@ -108,7 +108,7 @@ function mergeSpaces(personal: SpaceRow | null, household: SpaceRow | null): Par
 
 function splitSpace(data: FinanceData, space: SpaceId): Partial<FinanceData> {
   const profile = space === "personal"
-    ? { name: data.profile.name, voiceLocale: data.profile.voiceLocale, voiceLexicon: data.profile.voiceLexicon, aiEnabled: data.profile.aiEnabled }
+    ? { name: data.profile.name, voiceLocale: data.profile.voiceLocale, voiceLexicon: data.profile.voiceLexicon, aiEnabled: data.profile.aiEnabled, voiceAiEnabled: data.profile.voiceAiEnabled }
     : { partnerName: data.profile.partnerName, partnerEmail: data.profile.partnerEmail, householdName: data.profile.householdName, householdStartedAt: data.profile.householdStartedAt };
   return {
     version: 3,

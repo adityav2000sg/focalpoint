@@ -1,6 +1,6 @@
 import { expect, test, type Page } from "@playwright/test";
 
-async function mockWorkspace(page: Page) {
+async function mockWorkspace(page: Page, options: { qwenConfigured?: boolean } = {}) {
   let workspace: unknown = null;
   await page.route("**/api/finance", async (route) => {
     if (route.request().method() === "GET") return route.fulfill({ json: { data: workspace, members: [], revisions: { personal: 0, household: null }, inviteUrl: null } });
@@ -8,14 +8,16 @@ async function mockWorkspace(page: Page) {
     workspace = body.data;
     return route.fulfill({ json: { ok: true, members: [], revisions: { personal: 1, household: null }, inviteUrl: null } });
   });
-  await page.route("**/api/coach", (route) => route.fulfill({ json: { configured: false } }));
+  await page.route("**/api/coach", (route) => route.fulfill({ json: { configured: options.qwenConfigured === true } }));
   await page.route("**/api/history", (route) => route.fulfill({ json: { available: true, entries: [] } }));
 }
 
 test("public sign-in and policy pages are usable", async ({ page }) => {
   await page.goto("/login");
   await expect(page.getByRole("button", { name: "Continue with Google" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Continue with Apple" })).toBeVisible();
+  // Apple sign-in is env-gated (NEXT_PUBLIC_APPLE_AUTH_ENABLED); assert it only when the build enables it.
+  const appleButton = page.getByRole("button", { name: "Continue with Apple" });
+  if (await appleButton.count()) await expect(appleButton).toBeVisible();
   await page.getByRole("link", { name: "Privacy" }).click();
   await expect(page.getByRole("heading", { name: "Your finances deserve plain language." })).toBeVisible();
 });
@@ -58,9 +60,46 @@ test("Settings and private AI consent are reachable", async ({ page, isMobile })
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
   await expect(page.getByText("Recent changes")).toBeVisible();
-  await page.getByRole("checkbox").check();
+  await page.getByRole("checkbox", { name: /Reliable voice transcription/ }).check();
+  await page.getByRole("checkbox", { name: /Private AI Coach/ }).check();
   await page.getByRole("button", { name: "Save settings" }).click();
   await expect(page.getByRole("heading", { name: "Settings" })).not.toBeVisible();
+});
+
+test("basic browser speech produces an editable transcript", async ({ page }) => {
+  await page.addInitScript(() => {
+    class FakeSpeechRecognition {
+      lang = "";
+      interimResults = false;
+      continuous = false;
+      onresult: ((event: unknown) => void) | null = null;
+      onend: (() => void) | null = null;
+      onerror: ((event: unknown) => void) | null = null;
+      start() {
+        window.setTimeout(() => {
+          this.onresult?.({ results: [{ 0: { transcript: "Spent $12.50 at Yochi" }, isFinal: true }] });
+          this.onend?.();
+        }, 20);
+      }
+      stop() { this.onend?.(); }
+    }
+    Object.defineProperty(window, "SpeechRecognition", { configurable: true, value: FakeSpeechRecognition });
+    Object.defineProperty(window, "webkitSpeechRecognition", { configurable: true, value: FakeSpeechRecognition });
+  });
+  await mockWorkspace(page);
+  await page.goto("/preview");
+  await page.getByRole("button", { name: /Capture/ }).locator(":visible").first().click();
+  await page.getByRole("button", { name: "Start listening" }).click();
+  await expect(page.getByPlaceholder("Your words appear here…")).toHaveValue("Spent $12.50 at Yochi");
+});
+
+test("reliable Qwen voice is a separate explicit opt-in", async ({ page }) => {
+  await mockWorkspace(page, { qwenConfigured: true });
+  await page.goto("/preview");
+  await page.getByRole("button", { name: /Capture/ }).locator(":visible").first().click();
+  await page.getByRole("button", { name: "Enable reliable voice" }).click();
+  await expect(page.getByText(/Your recording stays on this device until you stop/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Enable reliable voice" })).toHaveCount(0);
 });
 
 test("Together appears only after a valid invitation is saved", async ({ page }) => {

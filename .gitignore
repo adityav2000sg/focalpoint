@@ -51,3 +51,6 @@ next-env.d.ts
 # Local Netlify folder
 .netlify
 deno.lock
+
+# Local Claude Code tooling config
+/.claude

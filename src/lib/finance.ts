@@ -102,6 +102,7 @@ export interface FinanceData {
     voiceLocale?: string;
     voiceLexicon?: string[];
     aiEnabled?: boolean;
+    voiceAiEnabled?: boolean;
   };
   accounts: Account[];
   transactions: Transaction[];
@@ -160,6 +161,7 @@ export function createEmptyFinanceData({ name, householdName }: { name: string; 
       voiceLocale: "en-SG",
       voiceLexicon: ["PayNow", "DBS", "CPF"],
       aiEnabled: false,
+      voiceAiEnabled: false,
     },
     accounts: [],
     transactions: [],

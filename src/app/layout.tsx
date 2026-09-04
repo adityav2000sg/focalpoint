@@ -1,4 +1,10 @@
 import type { Metadata } from "next";
+// Self-hosted so the PWA keeps its typography offline and renders identically on every device.
+// Inter carries the interface; Open Sauce One carries headings and figures.
+import "@fontsource-variable/inter/wght.css";
+import "@fontsource/open-sauce-one/400.css";
+import "@fontsource/open-sauce-one/500.css";
+import "@fontsource/open-sauce-one/600.css";
 import InteractionMotion from "@/components/InteractionMotion";
 import ServiceWorkerRegistration from "@/components/ServiceWorkerRegistration";
 import "./globals.css";

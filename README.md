@@ -17,7 +17,7 @@ Working end to end:
 - CSV/Google Sheets paste import, duplicate checks, review inbox, and receipt/screenshot scanning
 - Voice or typed capture with user vocabulary and mandatory review before records are saved
 - Deterministic cash-flow, resilience, goal-date, and planned-event forecasts
-- Optional Qwen coaching, speech recognition, and receipt extraction; AI is off until each user consents
+- Optional Qwen coaching, speech recognition, and receipt extraction; Coach and voice have separate, off-by-default consent controls
 - Optimistic multi-device saving, conflict merging, local fallback, JSON backup/restore, and server recovery history
 - Account deletion, privacy/terms/support pages, secure headers, AI request limits, and health endpoint
 - Responsive PWA and a native iOS project with deep-link OAuth, haptics, safe areas, branded assets, and privacy manifest

@@ -6,8 +6,17 @@ type SupabaseClient = NonNullable<Awaited<ReturnType<typeof getAuthenticatedUser
 
 export async function checkAiAccess(supabase: SupabaseClient, user: User, action: "coach" | "voice") {
   const preference = await supabase.from("finance_spaces").select("data_json").eq("type", "personal").eq("owner_user_id", user.id).maybeSingle();
-  if (preference.error || preference.data?.data_json?.profile?.aiEnabled !== true) {
-    return { allowed: false, message: "Enable private AI processing in Settings before using this feature." };
+  const profile = preference.data?.data_json?.profile;
+  // The two consents are independent, exactly as Settings and the privacy page state.
+  // Enabling Coach must never imply permission to upload a recording.
+  const hasConsent = action === "voice" ? profile?.voiceAiEnabled === true : profile?.aiEnabled === true;
+  if (preference.error || !hasConsent) {
+    return {
+      allowed: false,
+      message: action === "voice"
+        ? "Enable reliable voice transcription before sending a recording."
+        : "Turn on Private AI Coach in Settings before using this feature.",
+    };
   }
 
   const limit = action === "voice" ? 20 : 40;

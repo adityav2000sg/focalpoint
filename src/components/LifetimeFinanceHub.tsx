@@ -78,6 +78,7 @@ import {
   uid,
 } from "@/lib/finance";
 import { ImportReport, describeImport, importTransactions } from "@/lib/import";
+import { prepareAudioForTranscription } from "@/lib/audio";
 import { hasTogetherAccess, type TogetherMember } from "@/lib/together";
 import { mergeFinanceWorkspaces } from "@/lib/sync";
 
@@ -864,7 +865,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
 
         <div className="profile-chip">
           <span className="avatar">{data.profile.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</span>
-          <div><strong>{data.profile.name}</strong><small>{viewer.email}</small></div>
+          <div><strong title={data.profile.name}>{data.profile.name}</strong><small title={viewer.email}>{viewer.email}</small></div>
           <div className="profile-actions">
             <button className="signout-button" onClick={() => { setModal("settings"); setMobileMenu(false); }} aria-label="Settings" title="Settings"><Settings2 size={17} /></button>
             {onSignOut ? <button className="signout-button" type="button" onClick={() => void onSignOut()} aria-label="Sign out" title="Sign out"><LogOut size={17} /></button> : <form action={signOutPath || "/auth/signout"} method="post"><button className="signout-button" type="submit" aria-label="Sign out" title="Sign out"><LogOut size={17} /></button></form>}
@@ -1875,8 +1876,26 @@ type SpeechRecognizer = {
   stop: () => void;
   onresult: ((event: { results: ArrayLike<{ 0: { transcript: string }; isFinal: boolean }> }) => void) | null;
   onend: (() => void) | null;
-  onerror: (() => void) | null;
+  onerror: ((event: { error?: string; message?: string }) => void) | null;
 };
+
+function microphoneErrorMessage(reason: unknown) {
+  if (reason instanceof DOMException) {
+    if (["NotAllowedError", "SecurityError"].includes(reason.name)) return "Microphone access is blocked. Allow it for Lifetime in your browser or phone settings, then try again.";
+    if (["NotFoundError", "DevicesNotFoundError"].includes(reason.name)) return "No microphone was found. Connect or enable a microphone, then try again.";
+    if (["NotReadableError", "TrackStartError"].includes(reason.name)) return "Another app may be using the microphone. Close it and try again.";
+  }
+  return "The microphone could not start. Check its permission, then try again or type instead.";
+}
+
+function recognitionErrorMessage(code?: string) {
+  if (code === "not-allowed" || code === "service-not-allowed") return "Microphone access is blocked. Allow it for Lifetime in your browser settings, then try again.";
+  if (code === "audio-capture") return "No working microphone was found. Check your device input and try again.";
+  if (code === "network") return "Your browser’s speech service could not connect. Enable reliable transcription below or type instead.";
+  if (code === "language-not-supported") return "Your selected speech language is not supported by this browser. Enable reliable transcription or type instead.";
+  if (code === "no-speech") return "No speech was detected. Move closer to the microphone and try again.";
+  return "I couldn’t hear that clearly. Try again, enable reliable transcription, or type it.";
+}
 
 function localCaptureDraft(text: string, accounts: Account[], scope: ViewScope): Partial<Transaction> {
   const lower = text.toLowerCase();
@@ -1903,13 +1922,25 @@ function CaptureModal({ accounts, profile, scope, qwenConfigured, onClose, onTra
   const streamRef = useRef<MediaStream | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const speechRef = useRef<SpeechRecognizer | null>(null);
+  const recorderTimeoutRef = useRef<number | null>(null);
+  const stoppingSpeechRef = useRef(false);
+  const reliableVoiceEnabled = qwenConfigured && profile.voiceAiEnabled === true;
 
-  useEffect(() => () => { speechRef.current?.stop(); recorderRef.current?.stop(); streamRef.current?.getTracks().forEach((track) => track.stop()); }, []);
+  useEffect(() => () => {
+    if (recorderTimeoutRef.current) window.clearTimeout(recorderTimeoutRef.current);
+    if (recorderRef.current?.state === "recording") {
+      recorderRef.current.onstop = null;
+      recorderRef.current.stop();
+    }
+    speechRef.current?.stop();
+    streamRef.current?.getTracks().forEach((track) => track.stop());
+  }, []);
 
   async function transcribeBlob(blob: Blob) {
     setProcessing(true);
     try {
-      const audio = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(blob); });
+      const prepared = await prepareAudioForTranscription(blob);
+      const audio = await new Promise<string>((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(reader.error); reader.readAsDataURL(prepared); });
       const response = await request("/api/voice", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ audio, locale: profile.voiceLocale || "en-SG", lexicon: profile.voiceLexicon || [] }) });
       const payload = await response.json() as { transcript?: string; error?: string };
       if (!response.ok || !payload.transcript) throw new Error(payload.error || "Voice transcription failed");
@@ -1920,26 +1951,60 @@ function CaptureModal({ accounts, profile, scope, qwenConfigured, onClose, onTra
 
   async function startVoice() {
     setError("");
-    if (qwenConfigured && profile.aiEnabled && navigator.mediaDevices?.getUserMedia && typeof MediaRecorder !== "undefined") {
+    stoppingSpeechRef.current = false;
+    if (reliableVoiceEnabled) {
+      if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+        setError("This browser cannot record audio for reliable transcription. Try current Safari or Chrome, or type instead.");
+        return;
+      }
       try {
         const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        const recorder = new MediaRecorder(stream);
-        streamRef.current = stream; recorderRef.current = recorder; chunksRef.current = [];
+        streamRef.current = stream;
+        const preferredType = typeof MediaRecorder.isTypeSupported === "function"
+          ? ["audio/mp4", "audio/webm;codecs=opus", "audio/webm"].find((type) => MediaRecorder.isTypeSupported(type))
+          : undefined;
+        const recorder = preferredType ? new MediaRecorder(stream, { mimeType: preferredType }) : new MediaRecorder(stream);
+        recorderRef.current = recorder; chunksRef.current = [];
         recorder.ondataavailable = (event) => { if (event.data.size) chunksRef.current.push(event.data); };
-        recorder.onstop = () => { const blob = new Blob(chunksRef.current, { type: recorder.mimeType || "audio/webm" }); stream.getTracks().forEach((track) => track.stop()); streamRef.current = null; if (blob.size) transcribeBlob(blob); };
-        recorder.start(); setListening(true); return;
-      } catch { setError("Microphone access was not available. You can type instead."); setInputMode("type"); return; }
+        recorder.onerror = () => { setListening(false); setError("The recording stopped unexpectedly. Try again or type instead."); };
+        recorder.onstop = () => {
+          if (recorderTimeoutRef.current) window.clearTimeout(recorderTimeoutRef.current);
+          recorderTimeoutRef.current = null;
+          const blob = new Blob(chunksRef.current, { type: recorder.mimeType || preferredType || "audio/webm" });
+          stream.getTracks().forEach((track) => track.stop());
+          streamRef.current = null; recorderRef.current = null; setListening(false);
+          if (blob.size) void transcribeBlob(blob);
+          else setError("No audio was recorded. Check the microphone and try again.");
+        };
+        recorder.start(1_000);
+        recorderTimeoutRef.current = window.setTimeout(() => { if (recorder.state === "recording") recorder.stop(); }, 60_000);
+        setListening(true); return;
+      } catch (reason) {
+        streamRef.current?.getTracks().forEach((track) => track.stop());
+        streamRef.current = null;
+        setListening(false); setError(microphoneErrorMessage(reason)); return;
+      }
     }
     const constructors = window as unknown as { SpeechRecognition?: new () => SpeechRecognizer; webkitSpeechRecognition?: new () => SpeechRecognizer };
     const Recognition = constructors.SpeechRecognition || constructors.webkitSpeechRecognition;
-    if (!Recognition) { setError("Voice capture is not supported in this browser yet. You can type the same sentence."); setInputMode("type"); return; }
+    if (!Recognition) { setError(qwenConfigured ? "Basic browser speech is unavailable here. Enable reliable transcription below, or type the same sentence." : "Voice capture is not supported in this browser yet. You can type the same sentence."); return; }
     const recognition = new Recognition(); speechRef.current = recognition; recognition.lang = profile.voiceLocale || "en-SG"; recognition.interimResults = true; recognition.continuous = false;
     recognition.onresult = (event) => { let transcript = ""; for (let index = 0; index < event.results.length; index += 1) transcript += event.results[index][0].transcript; setText(transcript.trim()); };
-    recognition.onend = () => setListening(false); recognition.onerror = () => { setListening(false); setError("I couldn’t hear that clearly. Try again or type it."); };
-    recognition.start(); setListening(true);
+    recognition.onend = () => { speechRef.current = null; setListening(false); stoppingSpeechRef.current = false; };
+    recognition.onerror = (event) => { speechRef.current = null; setListening(false); if (!stoppingSpeechRef.current || event.error !== "aborted") setError(recognitionErrorMessage(event.error)); stoppingSpeechRef.current = false; };
+    try { recognition.start(); setListening(true); } catch (reason) { speechRef.current = null; setError(microphoneErrorMessage(reason)); }
   }
 
-  function stopVoice() { if (recorderRef.current?.state === "recording") recorderRef.current.stop(); speechRef.current?.stop(); setListening(false); }
+  function stopVoice() {
+    if (recorderRef.current?.state === "recording") recorderRef.current.stop();
+    if (speechRef.current) { stoppingSpeechRef.current = true; speechRef.current.stop(); }
+    setListening(false);
+  }
+
+  function enableReliableVoice() {
+    setError("");
+    onProfile({ ...profile, voiceAiEnabled: true });
+  }
 
   async function continueCapture() {
     const trimmed = text.trim(); if (!trimmed) { setError("Say or type something first."); return; }
@@ -1968,7 +2033,35 @@ function CaptureModal({ accounts, profile, scope, qwenConfigured, onClose, onTra
 
   function addLexiconWord() { const value = newWord.trim(); if (!value) return; onProfile({ ...profile, voiceLexicon: [...new Set([...(profile.voiceLexicon || []), value])] }); setNewWord(""); }
 
-  return <ModalShell eyebrow="Voice-first financial capture" title="Tell Lifetime" onClose={onClose}><div className="capture-shell"><div className="capture-intents">{(["transaction", "plan", "question"] as const).map((item) => <button key={item} className={intent === item ? "capture-intent-active" : ""} onClick={() => setIntent(item)}>{item === "transaction" ? <ArrowLeftRight size={17} /> : item === "plan" ? <CalendarDays size={17} /> : <MessageCircle size={17} />}{item === "transaction" ? "Log money" : item === "plan" ? "Plan ahead" : "Ask Coach"}</button>)}</div><div className="capture-mode-switch"><button className={inputMode === "voice" ? "active" : ""} onClick={() => setInputMode("voice")}><Mic size={16} /> Talk</button><button className={inputMode === "type" ? "active" : ""} onClick={() => setInputMode("type")}><Edit3 size={16} /> Type</button></div>{inputMode === "voice" && <div className={listening ? "voice-stage voice-listening" : "voice-stage"}><button className="voice-orb" onClick={listening ? stopVoice : startVoice} aria-label={listening ? "Stop listening" : "Start listening"}><span><Mic size={28} /></span><i /><i /><i /></button><strong>{processing ? "Understanding your words…" : listening ? "I’m listening… tap when finished" : "Tap, then speak naturally"}</strong><p>{qwenConfigured && profile.aiEnabled ? "Enhanced speech is enabled; audio is sent to Qwen only after you tap." : "Private AI is off. Browser speech is used when available, and you review every result."}</p></div>}<label className="field capture-transcript"><span>{inputMode === "voice" ? "Transcript — correct anything before continuing" : intent === "transaction" ? "Try “Spent $13.80 at Yochi on Revolut”" : intent === "plan" ? "Try “Plan $12,000 for Japan next April”" : "What do you want to understand?"}</span><textarea autoFocus={inputMode === "type"} value={text} onChange={(event) => setText(event.target.value)} placeholder="Your words appear here…" /></label><div className="voice-lexicon"><div><strong>Your vocabulary</strong><small>Names, Singlish, merchants and community terms that should be spelt exactly.</small></div><div className="lexicon-tags">{(profile.voiceLexicon || []).slice(0, 8).map((word) => <span key={word}>{word}</span>)}</div><div className="lexicon-add"><input value={newWord} onChange={(event) => setNewWord(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addLexiconWord(); } }} placeholder="Add Yochi, PayNow…" /><button onClick={addLexiconWord}><Plus size={16} /></button></div></div>{error && <p className="form-error">{error}</p>}<div className="form-actions"><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={continueCapture} disabled={processing}>{processing ? "Understanding…" : intent === "transaction" ? "Review transaction" : intent === "plan" ? "Add to forecast" : "Ask Coach"}</button></div></div></ModalShell>;
+  return <ModalShell eyebrow="Voice-first financial capture" title="Tell Lifetime" onClose={onClose}>
+    <div className="capture-shell">
+      <div className="capture-intents">
+        {(["transaction", "plan", "question"] as const).map((item) => <button key={item} className={intent === item ? "capture-intent-active" : ""} onClick={() => setIntent(item)}>{item === "transaction" ? <ArrowLeftRight size={17} /> : item === "plan" ? <CalendarDays size={17} /> : <MessageCircle size={17} />}{item === "transaction" ? "Log money" : item === "plan" ? "Plan ahead" : "Ask Coach"}</button>)}
+      </div>
+      <div className="capture-mode-switch">
+        <button className={inputMode === "voice" ? "active" : ""} onClick={() => setInputMode("voice")}><Mic size={16} /> Talk</button>
+        <button className={inputMode === "type" ? "active" : ""} onClick={() => setInputMode("type")}><Edit3 size={16} /> Type</button>
+      </div>
+      {inputMode === "voice" && <>
+        <div className={listening ? "voice-stage voice-listening" : "voice-stage"}>
+          <button className="voice-orb" onClick={listening ? stopVoice : startVoice} aria-label={listening ? "Stop listening" : "Start listening"} disabled={processing}>
+            <span><Mic size={28} /></span><i /><i /><i />
+          </button>
+          <strong>{processing ? "Transcribing securely…" : listening ? "Recording… tap when finished" : "Tap, then speak naturally"}</strong>
+          <p>{reliableVoiceEnabled ? "Your recording stays on this device until you stop, then only that clip is sent to Qwen for transcription." : "Basic browser speech is active. It can be unreliable in embedded and mobile browsers."}</p>
+        </div>
+        {qwenConfigured && !reliableVoiceEnabled && <div className="voice-consent">
+          <span><ShieldCheck size={20} /></span>
+          <div><strong>Make voice reliable</strong><small>Allow Lifetime to send only the recording you make here to Qwen for transcription. Your audio is never sent in the background.</small></div>
+          <button type="button" className="secondary-button" onClick={enableReliableVoice}>Enable reliable voice</button>
+        </div>}
+      </>}
+      <label className="field capture-transcript"><span>{inputMode === "voice" ? "Transcript — correct anything before continuing" : intent === "transaction" ? "Try “Spent $13.80 at Yochi on Revolut”" : intent === "plan" ? "Try “Plan $12,000 for Japan next April”" : "What do you want to understand?"}</span><textarea autoFocus={inputMode === "type"} value={text} onChange={(event) => setText(event.target.value)} placeholder="Your words appear here…" /></label>
+      <div className="voice-lexicon"><div><strong>Your vocabulary</strong><small>Names, Singlish, merchants and community terms that should be spelt exactly.</small></div><div className="lexicon-tags">{(profile.voiceLexicon || []).slice(0, 8).map((word) => <span key={word}>{word}</span>)}</div><div className="lexicon-add"><input value={newWord} onChange={(event) => setNewWord(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { event.preventDefault(); addLexiconWord(); } }} placeholder="Add Yochi, PayNow…" /><button onClick={addLexiconWord} aria-label="Add vocabulary word"><Plus size={16} /></button></div></div>
+      {error && <p className="form-error">{error}</p>}
+      <div className="form-actions"><button className="secondary-button" onClick={onClose}>Cancel</button><button className="primary-button" onClick={continueCapture} disabled={processing}>{processing ? "Understanding…" : intent === "transaction" ? "Review transaction" : intent === "plan" ? "Add to forecast" : "Ask Coach"}</button></div>
+    </div>
+  </ModalShell>;
 }
 
 function TransactionModal({ initial, accounts, scope, onNeedAccount, onClose, onSubmit, onDelete }: { initial?: Partial<Transaction> | null; accounts: Account[]; scope: ViewScope; onNeedAccount: () => void; onClose: () => void; onSubmit: (transaction: Transaction) => void; onDelete?: () => void }) {
@@ -2096,7 +2189,8 @@ function SettingsModal({ profile, hasTogether, onClose, onProfile, onTogether, o
   return <ModalShell eyebrow="Preferences and privacy" title="Settings" onClose={onClose}>
     <form className="form-stack" onSubmit={submit}>
       <label className="field"><span>Display name</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
-      <label className="check-field settings-check"><input type="checkbox" checked={profile.aiEnabled === true} onChange={(event) => onProfile({ ...profile, aiEnabled: event.target.checked })} /><span><strong>Private AI processing</strong><small>Off by default. When enabled, Coach context or voice audio is sent to the configured Qwen service only when you ask.</small></span></label>
+      <label className="check-field settings-check"><input type="checkbox" checked={profile.voiceAiEnabled === true} onChange={(event) => onProfile({ ...profile, voiceAiEnabled: event.target.checked })} /><span><strong>Reliable voice transcription</strong><small>Off by default. When enabled, only recordings you deliberately make are sent to Qwen after you stop recording.</small></span></label>
+      <label className="check-field settings-check"><input type="checkbox" checked={profile.aiEnabled === true} onChange={(event) => onProfile({ ...profile, aiEnabled: event.target.checked })} /><span><strong>Private AI Coach</strong><small>Off by default. When enabled, the financial context you choose to ask about is sent to Qwen for a more natural explanation and smarter capture parsing.</small></span></label>
       <section className="settings-section"><div><strong>Together</strong><small>{hasTogether ? "Manage members and shared access." : "Invite a partner or family member when you are ready."}</small></div><button type="button" className="secondary-button" onClick={onTogether}>{hasTogether ? "Manage" : "Set up"}</button></section>
       <section className="settings-section settings-stack"><div><strong>Your data</strong><small>Keep your own portable backup or restore one you exported earlier.</small></div><div className="settings-actions"><button type="button" className="secondary-button" onClick={onExport}><Download size={16} /> Export</button><label className="secondary-button file-button"><Upload size={16} /> Restore<input className="file-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) void onRestore(file); event.currentTarget.value = ""; }} /></label></div></section>
       <section className="settings-history"><div><strong>Recent changes</strong><small>Restore a Personal or Together space without affecting the other one.</small></div>{historyState === "loading" ? <p>Loading recovery points…</p> : historyState === "unavailable" ? <p>Recovery history becomes available after the current database upgrade is applied.</p> : historyState === "error" ? <p>Recovery history could not be loaded right now.</p> : history.length ? <div className="history-list">{history.slice(0, 8).map((entry) => <button type="button" key={entry.id} onClick={() => onRestoreVersion(entry)}><span><strong>{entry.scope === "household" ? "Together" : "Personal"}</strong><small>{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(entry.createdAt))}</small></span><span>Restore</span></button>)}</div> : <p>Your recovery points will appear after the next saved change.</p>}</section>
