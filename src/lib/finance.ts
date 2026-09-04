@@ -327,6 +327,20 @@ export function buildForecast(data: FinanceData, scope: ViewScope): FinanceForec
   };
 }
 
+/**
+ * Emergency cover is liquid balance divided by average spending, so a thin history
+ * produces figures like "130.7 months" that read as precise but are mostly noise.
+ * Past two years the exact number tells the user nothing they can act on, and a
+ * decimal place is only meaningful while the runway is short.
+ */
+export function formatCoverMonths(months: number) {
+  if (!Number.isFinite(months) || months <= 0) return "0 months";
+  if (months >= 24) return "24+ months";
+  if (months >= 12) return `${Math.round(months)} months`;
+  const rounded = months.toFixed(1);
+  return `${rounded} ${rounded === "1.0" ? "month" : "months"}`;
+}
+
 export function formatMoney(value: number, compact = false) {
   return new Intl.NumberFormat("en-SG", {
     style: "currency",

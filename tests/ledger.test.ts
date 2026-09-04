@@ -7,6 +7,7 @@ import {
   advanceRecurringDate,
   buildForecast,
   createEmptyFinanceData,
+  formatCoverMonths,
   isFinanceData,
   monthKey,
 } from "@/lib/finance";
@@ -250,5 +251,29 @@ describe("monthlySurplus", () => {
     expect(forecast.monthlySurplus).toBe(-2000);
     expect(forecast.goalForecasts[0].monthlyContribution).toBe(0);
     expect(forecast.goalForecasts[0].onTrack).toBe(false);
+  });
+});
+
+describe("emergency cover formatting", () => {
+  it("keeps a decimal only while the runway is short enough to act on", () => {
+    expect(formatCoverMonths(3.45)).toBe("3.5 months");
+    expect(formatCoverMonths(1.04)).toBe("1.0 month");
+    expect(formatCoverMonths(11.92)).toBe("11.9 months");
+  });
+
+  it("drops false precision once cover is long", () => {
+    expect(formatCoverMonths(12)).toBe("12 months");
+    expect(formatCoverMonths(19.6)).toBe("20 months");
+  });
+
+  it("caps runaway figures produced by a thin spending history", () => {
+    expect(formatCoverMonths(24)).toBe("24+ months");
+    expect(formatCoverMonths(130.7)).toBe("24+ months");
+    expect(formatCoverMonths(Number.POSITIVE_INFINITY)).toBe("0 months");
+  });
+
+  it("reports nothing when there is no spending to divide by", () => {
+    expect(formatCoverMonths(0)).toBe("0 months");
+    expect(formatCoverMonths(-4)).toBe("0 months");
   });
 });
