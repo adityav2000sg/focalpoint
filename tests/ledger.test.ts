@@ -430,3 +430,38 @@ describe("showing an account's own currency", () => {
     expect(shown(100, "SGD", "USD")).toBe("SGD 100.00");
   });
 });
+
+describe("goals and events in their own currency", () => {
+  const workspace = (over: Partial<FinanceData> = {}): FinanceData => ({
+    ...createEmptyFinanceData({ name: "P", householdName: "H" }),
+    profile: { ...createEmptyFinanceData({ name: "P", householdName: "H" }).profile, baseCurrency: "SGD", fxRates: { USD: 1.35 } },
+    accounts: [acct({ id: "a1", balance: 10_000, currency: "SGD" })],
+    transactions: [
+      { id: "t1", type: "income", amount: 5000, date: "2026-08-05", description: "Salary", category: "Income", accountId: "a1", space: "personal", source: "manual" },
+      { id: "t2", type: "expense", amount: 2000, date: "2026-08-06", description: "Living", category: "Home", accountId: "a1", space: "personal", source: "manual" },
+    ],
+    ...over,
+  });
+
+  it("converts a foreign goal target before measuring it against the surplus", () => {
+    const usdGoal = { id: "g1", name: "US trip", target: 1000, current: 0, targetDate: "2027-06-01", space: "personal" as const, icon: "plane", monthlyContribution: 100, currency: "USD" as const };
+    const forecast = buildForecast(workspace({ goals: [usdGoal] }), "personal");
+    // 100 USD of contribution is 135 SGD against a 3000 SGD surplus.
+    expect(forecast.safeToSpend).toBeCloseTo(3000 - 135, 6);
+    // 1000 USD remaining is 1350 SGD, at 135 SGD a month.
+    expect(forecast.goalForecasts[0].monthsRemaining).toBe(10);
+  });
+
+  it("converts a foreign planned event when it delays a goal", () => {
+    const goal = { id: "g1", name: "Fund", target: 2000, current: 0, targetDate: "2027-06-01", space: "personal" as const, icon: "spark", monthlyContribution: 100 };
+    const event = { id: "e1", name: "Flights", amount: 100, date: "2027-01-01", kind: "travel" as const, space: "personal" as const, includeInPlan: true, currency: "USD" as const };
+    const forecast = buildForecast(workspace({ goals: [goal], plannedEvents: [event] }), "personal");
+    // 100 USD of planned cost is 135 SGD, which is two months of a 100 SGD contribution.
+    expect(forecast.goalForecasts[0].plannedEventDelayMonths).toBe(2);
+  });
+
+  it("rejects a restored backup carrying a currency it does not understand", () => {
+    const bad = workspace({ goals: [{ id: "g1", name: "X", target: 1, current: 0, targetDate: "2027-01-01", space: "personal", icon: "spark", currency: "XYZ" } as never] });
+    expect(isFinanceData(bad)).toBe(false);
+  });
+});

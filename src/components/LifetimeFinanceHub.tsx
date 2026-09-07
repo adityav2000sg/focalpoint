@@ -1026,6 +1026,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
               accounts={data.accounts}
               forecast={forecast}
               recurringCost={activeRecurringCost}
+              fx={fx}
               onAddGoal={openNewGoal}
               onAddEvent={openNewEvent}
               onAddRecurring={openNewRecurring}
@@ -1070,8 +1071,8 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
       {modal === "capture" && <CaptureModal accounts={data.accounts} profile={data.profile} scope={scope} qwenConfigured={qwenConfigured} onClose={() => setModal(null)} onTransaction={(draft) => openCaptureDraft(draft)} onPlan={(event) => savePlannedEvent(event)} onAsk={(prompt) => { setModal(null); setActiveView("coach"); window.setTimeout(() => window.dispatchEvent(new CustomEvent("lifetime-coach-question", { detail: prompt })), 100); }} onProfile={(profile) => setData((current) => ({ ...current, profile }))} />}
       {modal === "transaction" && <TransactionModal initial={editingTransaction || captureDraft} accounts={data.accounts} scope={scope} fx={fx} onNeedAccount={() => openRequiredAccount("transaction")} onClose={() => { setModal(null); setEditingTransaction(null); setEditingInbox(null); setCaptureDraft(null); }} onSubmit={saveTransaction} onDelete={editingTransaction ? () => deleteTransaction(editingTransaction) : undefined} />}
       {modal === "account" && <AccountModal initial={editingAccount} scope={scope} canShare={hasTogether} profileName={data.profile.name} partnerName={data.profile.partnerName} defaultCurrency={baseCurrency} onClose={() => { setModal(null); setEditingAccount(null); setAfterAccount(null); setCaptureDraft(null); }} onSubmit={saveAccount} onDelete={editingAccount ? () => deleteAccount(editingAccount) : undefined} />}
-      {modal === "goal" && <GoalModal initial={editingGoal} scope={scope} canShare={hasTogether} onClose={() => { setModal(null); setEditingGoal(null); }} onSubmit={saveGoal} onDelete={editingGoal ? () => deleteGoal(editingGoal) : undefined} />}
-      {modal === "event" && <PlannedEventModal initial={editingEvent} scope={scope} canShare={hasTogether} onClose={() => { setModal(null); setEditingEvent(null); }} onSubmit={savePlannedEvent} onDelete={editingEvent ? () => deletePlannedEvent(editingEvent) : undefined} />}
+      {modal === "goal" && <GoalModal initial={editingGoal} scope={scope} canShare={hasTogether} defaultCurrency={baseCurrency} onClose={() => { setModal(null); setEditingGoal(null); }} onSubmit={saveGoal} onDelete={editingGoal ? () => deleteGoal(editingGoal) : undefined} />}
+      {modal === "event" && <PlannedEventModal initial={editingEvent} scope={scope} canShare={hasTogether} defaultCurrency={baseCurrency} onClose={() => { setModal(null); setEditingEvent(null); }} onSubmit={savePlannedEvent} onDelete={editingEvent ? () => deletePlannedEvent(editingEvent) : undefined} />}
       {modal === "recurring" && <RecurringModal initial={editingRecurring} scope={scope} accounts={data.accounts} onNeedAccount={() => openRequiredAccount("recurring")} onClose={() => { setModal(null); setEditingRecurring(null); }} onSubmit={saveRecurring} onDelete={editingRecurring ? () => deleteRecurring(editingRecurring) : undefined} />}
       {modal === "import" && <ImportModal data={data} scope={scope} onNeedAccount={() => openRequiredAccount("import")} onClose={() => setModal(null)} setData={setData} onStage={stageInbox} notify={notify} />}
       {modal === "household" && <HouseholdModal profile={data.profile} members={householdMembers} viewerEmail={viewer.email} inviteUrl={inviteUrl} onClose={() => setModal(null)} onSubmit={saveHousehold} onManage={confirmTogetherAction} notify={notify} />}
@@ -1289,6 +1290,7 @@ function Overview({
           {goal ? (
             <GoalCard
               goal={goal}
+              fx={fx}
               compact
               contributionOpen={goalContribution === goal.id}
               onContribution={() => setGoalContribution(goalContribution === goal.id ? null : goal.id)}
@@ -1495,16 +1497,16 @@ function SpendingPlanRow({ plan, spent, onSave }: { plan: FinanceData["spendingP
   return <div className="plan-row"><div className="plan-row-top"><span><i style={{ background: categoryColors[plan.category] || categoryColors.Other }} />{plan.category}<small>{formatMoney(spent)} spent</small></span>{editing ? <span className="inline-plan-edit"><input autoFocus type="number" min="0" value={amount} onChange={(event) => setAmount(event.target.value)} aria-label={`${plan.category} monthly plan`} /><button onClick={() => { onSave(plan.category, Number(amount) || 0, plan.space); setEditing(false); }}><Check size={15} /></button></span> : <button onClick={() => setEditing(true)}>{formatMoney(plan.monthlyLimit)} <Edit3 size={14} /></button>}</div><div className="plan-progress"><i className={ratio > 1 ? "over-plan" : ""} style={{ width: `${Math.min(100, ratio * 100)}%`, background: categoryColors[plan.category] || categoryColors.Other }} /></div><small>{ratio > 1 ? `${formatMoney(spent - plan.monthlyLimit)} over` : `${formatMoney(Math.max(0, plan.monthlyLimit - spent))} left`}</small></div>;
 }
 
-function FutureView({ goals, recurring, events, accounts, forecast, recurringCost, onAddGoal, onAddEvent, onAddRecurring, onToggleRecurring, onPostRecurring, onEditGoal, onEditEvent, onEditRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal, onToggleEvent }: {
-  goals: Goal[]; recurring: RecurringItem[]; events: PlannedEvent[]; accounts: Account[]; forecast: FinanceForecast; recurringCost: number; onAddGoal: () => void; onAddEvent: () => void; onAddRecurring: () => void; onToggleRecurring: (id: string) => void; onPostRecurring: (item: RecurringItem) => void; onEditGoal: (goal: Goal) => void; onEditEvent: (event: PlannedEvent) => void; onEditRecurring: (item: RecurringItem) => void; goalContribution: string | null; setGoalContribution: (id: string | null) => void; contributionAmount: string; setContributionAmount: (value: string) => void; fundGoal: (id: string) => void; onToggleEvent: (id: string) => void;
+function FutureView({ goals, recurring, events, accounts, forecast, recurringCost, fx, onAddGoal, onAddEvent, onAddRecurring, onToggleRecurring, onPostRecurring, onEditGoal, onEditEvent, onEditRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal, onToggleEvent }: {
+  goals: Goal[]; recurring: RecurringItem[]; events: PlannedEvent[]; accounts: Account[]; forecast: FinanceForecast; recurringCost: number; fx: FxContext; onAddGoal: () => void; onAddEvent: () => void; onAddRecurring: () => void; onToggleRecurring: (id: string) => void; onPostRecurring: (item: RecurringItem) => void; onEditGoal: (goal: Goal) => void; onEditEvent: (event: PlannedEvent) => void; onEditRecurring: (item: RecurringItem) => void; goalContribution: string | null; setGoalContribution: (id: string | null) => void; contributionAmount: string; setContributionAmount: (value: string) => void; fundGoal: (id: string) => void; onToggleEvent: (id: string) => void;
 }) {
   const plannedTotal = events.filter((item) => item.includeInPlan).reduce((sum, item) => sum + item.amount, 0);
   const hasForecastEvidence = forecast.historyMonths > 0;
   return <div className="page-stack"><PageHeading eyebrow="From today to someday" title="Future" copy="Goals, life plans and scenarios share one model, so every choice reveals its trade-off."><button className="secondary-button" onClick={onAddEvent}><CalendarDays size={17} /> Plan an event</button><button className="primary-button" onClick={onAddGoal}><Target size={17} /> New goal</button></PageHeading>
     <section className="future-hero"><div><p className="eyebrow hero-eyebrow">Forecast runway</p><h2>{hasForecastEvidence ? `${formatMoney(Math.abs(forecast.monthlySurplus))} monthly ${forecast.monthlySurplus < 0 ? "deficit" : "surplus"}` : "Waiting for real activity"}</h2><p>{hasForecastEvidence ? `Based on ${forecast.historyMonths} month${forecast.historyMonths === 1 ? "" : "s"} of activity · ${forecast.confidence} confidence` : "Add an account and transactions before relying on a forecast."}</p></div><div className="future-stat"><span>Safe to spend</span><strong>{hasForecastEvidence ? formatMoney(forecast.safeToSpend) : "Not available"}</strong><small>{hasForecastEvidence ? "after goal contributions" : "needs income and spending"}</small></div><div className="future-stat"><span>Emergency cover</span><strong>{hasForecastEvidence ? formatCoverMonths(forecast.emergencyMonths) : "Not available"}</strong><small>{hasForecastEvidence ? `${formatMoney(forecast.liquidBalance)} liquid` : "needs a liquid balance"}</small></div></section>
-    <section className="goal-runway-grid">{goals.map((goal) => { const model = forecast.goalForecasts.find((item) => item.goalId === goal.id); return <button className="runway-card" key={goal.id} onClick={() => onEditGoal(goal)}><div className="runway-top"><span className={`goal-symbol goal-${goal.icon}`}><Target size={18} /></span><span className={model?.onTrack ? "status-on-track" : "status-watch"}>{model?.onTrack ? "On track" : "Needs attention"}</span></div><h3>{goal.name}</h3><strong>{model?.estimatedDate ? new Date(`${model.estimatedDate}T12:00:00`).toLocaleDateString("en-SG", { month: "long", year: "numeric" }) : "No forecast yet"}</strong><p>{model?.plannedEventDelayMonths ? `Planned events add about ${model.plannedEventDelayMonths} months.` : "No planned event delay modelled."}</p><div className="goal-progress"><i style={{ width: `${Math.min(100, (goal.current / goal.target) * 100)}%` }} /></div><small>{formatMoney(goal.current)} of {formatMoney(goal.target)} · tap to edit</small></button>; })}{!goals.length && <EmptyState icon={<Target />} title="Give the future a number" copy="Create a goal and Lifetime will estimate when you can reach it." />}</section>
-    <div className="dashboard-grid"><section className="panel scenario-panel"><PanelHeading eyebrow="Scenario lab" title="What your plans change" action="Add event" onAction={onAddEvent} /><div className="scenario-summary"><span>Included life plans</span><strong>{formatMoney(plannedTotal)}</strong><small>Turn an event off to compare the forecast without it.</small></div><div className="event-list">{events.map((event) => <div className={event.includeInPlan ? "event-row" : "event-row event-muted"} key={event.id}><span className="event-date"><strong>{new Date(`${event.date}T12:00:00`).toLocaleDateString("en-SG", { month: "short" })}</strong><small>{new Date(`${event.date}T12:00:00`).getFullYear()}</small></span><button className="event-copy" onClick={() => onEditEvent(event)}><strong>{event.name}</strong><small>{event.kind} · tap to edit</small></button><strong>{formatMoney(event.amount)}</strong><button className={event.includeInPlan ? "tiny-toggle tiny-toggle-on" : "tiny-toggle"} onClick={() => onToggleEvent(event.id)} aria-label={`${event.includeInPlan ? "Exclude" : "Include"} ${event.name} in forecast`}><i /></button></div>)}{!events.length && <EmptyState icon={<CalendarDays />} title="No life plans yet" copy="Add a trip, move, car, education, or family event to model the trade-off." />}</div></section><section className="panel forecast-explain"><span className="coach-glance-icon"><WandSparkles size={21} /></span><p className="eyebrow">Scenario signal</p><h3>{plannedTotal ? `${formatMoney(plannedTotal)} of plans are competing with your goals.` : "No planned events are competing with your goals."}</h3><p>{forecast.goalForecasts.some((item) => item.plannedEventDelayMonths > 0) ? `The largest modelled delay is ${Math.max(...forecast.goalForecasts.map((item) => item.plannedEventDelayMonths))} months. Lifetime recalculates this when spending or contributions change.` : "Your forecast currently has no event-driven delays."}</p><small>Forecasts are estimates, not guarantees. Evidence: transaction averages, current balances, goal contributions and included events.</small></section></div>
-    <PlansView goals={goals} recurring={recurring} accounts={accounts} recurringCost={recurringCost} onAddGoal={onAddGoal} onAddRecurring={onAddRecurring} onToggleRecurring={onToggleRecurring} onPostRecurring={onPostRecurring} onEditGoal={onEditGoal} onEditRecurring={onEditRecurring} goalContribution={goalContribution} setGoalContribution={setGoalContribution} contributionAmount={contributionAmount} setContributionAmount={setContributionAmount} fundGoal={fundGoal} />
+    <section className="goal-runway-grid">{goals.map((goal) => { const model = forecast.goalForecasts.find((item) => item.goalId === goal.id); return <button className="runway-card" key={goal.id} onClick={() => onEditGoal(goal)}><div className="runway-top"><span className={`goal-symbol goal-${goal.icon}`}><Target size={18} /></span><span className={model?.onTrack ? "status-on-track" : "status-watch"}>{model?.onTrack ? "On track" : "Needs attention"}</span></div><h3>{goal.name}</h3><strong>{model?.estimatedDate ? new Date(`${model.estimatedDate}T12:00:00`).toLocaleDateString("en-SG", { month: "long", year: "numeric" }) : "No forecast yet"}</strong><p>{model?.plannedEventDelayMonths ? `Planned events add about ${model.plannedEventDelayMonths} months.` : "No planned event delay modelled."}</p><div className="goal-progress"><i style={{ width: `${Math.min(100, (goal.current / goal.target) * 100)}%` }} /></div><small>{formatAccountBalance(goal.current, goal.currency || fx.base, fx.base)} of {formatAccountBalance(goal.target, goal.currency || fx.base, fx.base)} · tap to edit</small></button>; })}{!goals.length && <EmptyState icon={<Target />} title="Give the future a number" copy="Create a goal and Lifetime will estimate when you can reach it." />}</section>
+    <div className="dashboard-grid"><section className="panel scenario-panel"><PanelHeading eyebrow="Scenario lab" title="What your plans change" action="Add event" onAction={onAddEvent} /><div className="scenario-summary"><span>Included life plans</span><strong>{formatMoney(plannedTotal)}</strong><small>Turn an event off to compare the forecast without it.</small></div><div className="event-list">{events.map((event) => <div className={event.includeInPlan ? "event-row" : "event-row event-muted"} key={event.id}><span className="event-date"><strong>{new Date(`${event.date}T12:00:00`).toLocaleDateString("en-SG", { month: "short" })}</strong><small>{new Date(`${event.date}T12:00:00`).getFullYear()}</small></span><button className="event-copy" onClick={() => onEditEvent(event)}><strong>{event.name}</strong><small>{event.kind} · tap to edit</small></button><strong>{formatAccountBalance(event.amount, event.currency || fx.base, fx.base)}</strong><button className={event.includeInPlan ? "tiny-toggle tiny-toggle-on" : "tiny-toggle"} onClick={() => onToggleEvent(event.id)} aria-label={`${event.includeInPlan ? "Exclude" : "Include"} ${event.name} in forecast`}><i /></button></div>)}{!events.length && <EmptyState icon={<CalendarDays />} title="No life plans yet" copy="Add a trip, move, car, education, or family event to model the trade-off." />}</div></section><section className="panel forecast-explain"><span className="coach-glance-icon"><WandSparkles size={21} /></span><p className="eyebrow">Scenario signal</p><h3>{plannedTotal ? `${formatMoney(plannedTotal)} of plans are competing with your goals.` : "No planned events are competing with your goals."}</h3><p>{forecast.goalForecasts.some((item) => item.plannedEventDelayMonths > 0) ? `The largest modelled delay is ${Math.max(...forecast.goalForecasts.map((item) => item.plannedEventDelayMonths))} months. Lifetime recalculates this when spending or contributions change.` : "Your forecast currently has no event-driven delays."}</p><small>Forecasts are estimates, not guarantees. Evidence: transaction averages, current balances, goal contributions and included events.</small></section></div>
+    <PlansView goals={goals} recurring={recurring} accounts={accounts} recurringCost={recurringCost} fx={fx} onAddGoal={onAddGoal} onAddRecurring={onAddRecurring} onToggleRecurring={onToggleRecurring} onPostRecurring={onPostRecurring} onEditGoal={onEditGoal} onEditRecurring={onEditRecurring} goalContribution={goalContribution} setGoalContribution={setGoalContribution} contributionAmount={contributionAmount} setContributionAmount={setContributionAmount} fundGoal={fundGoal} />
   </div>;
 }
 
@@ -1694,11 +1696,12 @@ function AccountsView({ accounts, netWorth, fx, onAdd, onEdit }: { accounts: Acc
   );
 }
 
-function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAddRecurring, onToggleRecurring, onPostRecurring, onEditGoal, onEditRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal }: {
+function PlansView({ goals, recurring, accounts, recurringCost, fx, onAddGoal, onAddRecurring, onToggleRecurring, onPostRecurring, onEditGoal, onEditRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal }: {
   goals: Goal[];
   recurring: RecurringItem[];
   accounts: Account[];
   recurringCost: number;
+  fx: FxContext;
   onAddGoal: () => void;
   onAddRecurring: () => void;
   onToggleRecurring: (id: string) => void;
@@ -1724,6 +1727,7 @@ function PlansView({ goals, recurring, accounts, recurringCost, onAddGoal, onAdd
           <GoalCard
             key={goal.id}
             goal={goal}
+            fx={fx}
             contributionOpen={goalContribution === goal.id}
             onContribution={() => setGoalContribution(goalContribution === goal.id ? null : goal.id)}
             contributionAmount={contributionAmount}
@@ -1839,8 +1843,9 @@ function TransactionRow({ transaction, accounts, showSpace = false, onDelete, on
   );
 }
 
-function GoalCard({ goal, compact = false, contributionOpen, onContribution, contributionAmount, setContributionAmount, fundGoal, onEdit }: {
+function GoalCard({ goal, fx, compact = false, contributionOpen, onContribution, contributionAmount, setContributionAmount, fundGoal, onEdit }: {
   goal: Goal;
+  fx: FxContext;
   compact?: boolean;
   contributionOpen: boolean;
   onContribution: () => void;
@@ -1855,7 +1860,7 @@ function GoalCard({ goal, compact = false, contributionOpen, onContribution, con
     <article className={compact ? "goal-card compact-goal" : "goal-card"}>
       <div className="goal-card-top"><span className="goal-icon"><Icon size={19} /></span><span className="goal-card-tools"><span className="space-badge">{goal.space === "household" ? <Users size={13} /> : <UserRound size={13} />}{goal.space === "household" ? "Shared" : "Personal"}</span>{onEdit && <button className="edit-item-button" onClick={onEdit} aria-label={`Edit ${goal.name}`}><Edit3 size={15} /></button>}</span></div>
       {!compact && <h3>{goal.name}</h3>}
-      <div className="goal-numbers"><strong>{formatMoney(goal.current)}</strong><span>of {formatMoney(goal.target)}</span></div>
+      <div className="goal-numbers"><strong>{formatAccountBalance(goal.current, goal.currency || fx.base, fx.base)}</strong><span>of {formatAccountBalance(goal.target, goal.currency || fx.base, fx.base)}</span></div>
       <div className="goal-progress"><i style={{ width: `${progress}%` }} /></div>
       <div className="goal-footer"><span>{progress.toFixed(0)}% funded</span><span>Target {formatDate(goal.targetDate, true)}</span></div>
       <button className="goal-contribute" onClick={onContribution}><Plus size={15} /> Add contribution</button>
@@ -2377,9 +2382,10 @@ function HouseholdModal({ profile, members, viewerEmail, inviteUrl, onClose, onS
   );
 }
 
-function GoalModal({ initial, scope, canShare, onClose, onSubmit, onDelete }: { initial?: Goal | null; scope: ViewScope; canShare: boolean; onClose: () => void; onSubmit: (goal: Goal) => void; onDelete?: () => void }) {
+function GoalModal({ initial, scope, canShare, defaultCurrency, onClose, onSubmit, onDelete }: { initial?: Goal | null; scope: ViewScope; canShare: boolean; defaultCurrency: CurrencyCode; onClose: () => void; onSubmit: (goal: Goal) => void; onDelete?: () => void }) {
   const [name, setName] = useState(initial?.name || "");
   const [target, setTarget] = useState(initial ? String(initial.target) : "");
+  const [currency, setCurrency] = useState<CurrencyCode>(initial?.currency || defaultCurrency);
   const [current, setCurrent] = useState(initial ? String(initial.current) : "");
   const [targetDate, setTargetDate] = useState(initial?.targetDate || "");
   const [monthlyContribution, setMonthlyContribution] = useState(initial?.monthlyContribution ? String(initial.monthlyContribution) : "");
@@ -2391,7 +2397,7 @@ function GoalModal({ initial, scope, canShare, onClose, onSubmit, onDelete }: { 
     const targetAmount = Number(target);
     const currentAmount = Number(current || 0);
     if (!name.trim() || !targetDate || !Number.isFinite(targetAmount) || targetAmount <= 0 || !Number.isFinite(currentAmount)) return;
-    onSubmit({ id: initial?.id || uid("goal"), name: name.trim(), target: targetAmount, current: Math.min(targetAmount, Math.max(0, currentAmount)), targetDate, space, icon: initial?.icon || (space === "household" ? "home" : "spark"), monthlyContribution: Math.max(0, Number(monthlyContribution) || 0), priority });
+    onSubmit({ id: initial?.id || uid("goal"), name: name.trim(), target: targetAmount, current: Math.min(targetAmount, Math.max(0, currentAmount)), targetDate, space, icon: initial?.icon || (space === "household" ? "home" : "spark"), monthlyContribution: Math.max(0, Number(monthlyContribution) || 0), currency, priority });
   }
 
   return (
@@ -2400,6 +2406,7 @@ function GoalModal({ initial, scope, canShare, onClose, onSubmit, onDelete }: { 
         <div className="form-grid">
           <label className="field full-field"><span>Goal name</span><input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="What are you building toward?" /></label>
           <label className="field"><span>Target amount</span><input required type="number" min="1" step="1" value={target} onChange={(event) => setTarget(event.target.value)} placeholder="30000" /></label>
+          <label className="field"><span>Currency</span><select value={currency} onChange={(event) => setCurrency(event.target.value as CurrencyCode)}>{CURRENCIES.map((code) => <option key={code} value={code}>{code}</option>)}</select></label>
           <label className="field"><span>Already saved</span><input type="number" min="0" step="1" value={current} onChange={(event) => setCurrent(event.target.value)} placeholder="0" /></label>
           <label className="field"><span>Target date</span><input required type="date" value={targetDate} onChange={(event) => setTargetDate(event.target.value)} /></label>
           <label className="field"><span>Monthly contribution</span><input type="number" min="0" step="1" value={monthlyContribution} onChange={(event) => setMonthlyContribution(event.target.value)} placeholder="800" /></label>
@@ -2412,16 +2419,17 @@ function GoalModal({ initial, scope, canShare, onClose, onSubmit, onDelete }: { 
   );
 }
 
-function PlannedEventModal({ initial, scope, canShare, onClose, onSubmit, onDelete }: { initial?: PlannedEvent | null; scope: ViewScope; canShare: boolean; onClose: () => void; onSubmit: (event: PlannedEvent) => void; onDelete?: () => void }) {
+function PlannedEventModal({ initial, scope, canShare, defaultCurrency, onClose, onSubmit, onDelete }: { initial?: PlannedEvent | null; scope: ViewScope; canShare: boolean; defaultCurrency: CurrencyCode; onClose: () => void; onSubmit: (event: PlannedEvent) => void; onDelete?: () => void }) {
   const [name, setName] = useState(initial?.name || "");
   const [amount, setAmount] = useState(initial ? String(initial.amount) : "");
+  const [currency, setCurrency] = useState<CurrencyCode>(initial?.currency || defaultCurrency);
   const [date, setDate] = useState(initial?.date || "");
   const [kind, setKind] = useState<PlannedEvent["kind"]>(initial?.kind || "travel");
   const [space, setSpace] = useState<SpaceId>(initial?.space || (scope === "all" ? "household" : "personal"));
   const [note, setNote] = useState(initial?.note || "");
   function submit(event: FormEvent) {
     event.preventDefault(); const parsed = Number(amount); if (!name.trim() || !date || !Number.isFinite(parsed) || parsed <= 0) return;
-    onSubmit({ id: initial?.id || uid("event"), name: name.trim(), amount: parsed, date, kind, space, includeInPlan: initial?.includeInPlan ?? true, note: note.trim() || undefined });
+    onSubmit({ id: initial?.id || uid("event"), name: name.trim(), amount: parsed, date, kind, space, includeInPlan: initial?.includeInPlan ?? true, note: note.trim() || undefined, currency });
   }
   return (
     <ModalShell eyebrow="Life happens in the forecast" title={initial ? "Edit future event" : "Plan a future event"} onClose={onClose}>
@@ -2429,6 +2437,7 @@ function PlannedEventModal({ initial, scope, canShare, onClose, onSubmit, onDele
         <div className="form-grid">
           <label className="field full-field"><span>What are you planning?</span><input autoFocus required value={name} onChange={(event) => setName(event.target.value)} placeholder="Japan in spring" /></label>
           <label className="field"><span>Estimated total cost</span><input required type="number" min="1" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="12000" /></label>
+          <label className="field"><span>Currency</span><select value={currency} onChange={(event) => setCurrency(event.target.value as CurrencyCode)}>{CURRENCIES.map((code) => <option key={code} value={code}>{code}</option>)}</select></label>
           <label className="field"><span>When</span><input required type="date" value={date} onChange={(event) => setDate(event.target.value)} /></label>
           <label className="field"><span>Kind of plan</span><select value={kind} onChange={(event) => setKind(event.target.value as PlannedEvent["kind"])}><option value="travel">Travel</option><option value="home">Home</option><option value="family">Family</option><option value="education">Education</option><option value="car">Car</option><option value="other">Other</option></select></label>
           <label className="field"><span>Visibility</span><select value={space} onChange={(event) => setSpace(event.target.value as SpaceId)}><option value="personal">Private to me</option>{canShare && <option value="household">Shared in Together</option>}</select></label>

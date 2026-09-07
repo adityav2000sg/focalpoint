@@ -105,6 +105,8 @@ export interface Goal {
   icon: string;
   monthlyContribution?: number;
   priority?: "essential" | "important" | "flexible";
+  /** Currency of target, current and monthlyContribution. Absent means the reporting currency. */
+  currency?: CurrencyCode;
 }
 
 export interface RecurringItem {
@@ -135,6 +137,8 @@ export interface PlannedEvent {
   space: SpaceId;
   includeInPlan: boolean;
   note?: string;
+  /** Currency of amount. Absent means the reporting currency. */
+  currency?: CurrencyCode;
 }
 
 export interface InboxItem {
@@ -251,10 +255,10 @@ export function isFinanceData(input: unknown): input is FinanceData {
   if (candidate.version !== 3 || !record(profile) || !text(profile.name) || !text(profile.partnerName) || !text(profile.householdName)) return false;
   if (!Array.isArray(candidate.accounts) || !candidate.accounts.every((item) => record(item) && text(item.id) && text(item.name) && text(item.institution) && text(item.type) && space(item.space) && text(item.owner) && amount(item.balance) && isCurrencyCode(item.currency))) return false;
   if (!Array.isArray(candidate.transactions) || !candidate.transactions.every((item) => record(item) && text(item.id) && ["expense", "income", "transfer"].includes(String(item.type)) && amount(item.amount) && item.amount > 0 && text(item.date) && text(item.description) && text(item.category) && text(item.accountId) && space(item.space) && text(item.source) && (item.affectsBalance === undefined || typeof item.affectsBalance === "boolean"))) return false;
-  if (!Array.isArray(candidate.goals) || !candidate.goals.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.target) && amount(item.current) && text(item.targetDate) && space(item.space) && text(item.icon))) return false;
+  if (!Array.isArray(candidate.goals) || !candidate.goals.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.target) && amount(item.current) && text(item.targetDate) && space(item.space) && text(item.icon) && (item.currency === undefined || isCurrencyCode(item.currency)))) return false;
   if (!Array.isArray(candidate.recurring) || !candidate.recurring.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.amount) && ["monthly", "quarterly", "yearly"].includes(String(item.cadence)) && text(item.nextDate) && text(item.accountId) && text(item.category) && space(item.space) && typeof item.active === "boolean")) return false;
   if (!Array.isArray(candidate.spendingPlans) || !candidate.spendingPlans.every((item) => record(item) && text(item.id) && text(item.category) && amount(item.monthlyLimit) && space(item.space))) return false;
-  if (!Array.isArray(candidate.plannedEvents) || !candidate.plannedEvents.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.amount) && text(item.date) && text(item.kind) && space(item.space) && typeof item.includeInPlan === "boolean")) return false;
+  if (!Array.isArray(candidate.plannedEvents) || !candidate.plannedEvents.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.amount) && text(item.date) && text(item.kind) && space(item.space) && typeof item.includeInPlan === "boolean" && (item.currency === undefined || isCurrencyCode(item.currency)))) return false;
   if (!Array.isArray(candidate.inbox) || !candidate.inbox.every((item) => record(item) && text(item.id) && text(item.description) && amount(item.amount) && text(item.date) && text(item.source) && ["expense", "income", "transfer"].includes(String(item.suggestedType)) && text(item.suggestedCategory) && space(item.space) && amount(item.confidence) && text(item.status) && text(item.reason) && (item.affectsBalance === undefined || typeof item.affectsBalance === "boolean"))) return false;
   return true;
 }
@@ -444,14 +448,15 @@ export function buildForecast(data: FinanceData, scope: ViewScope): FinanceForec
   const monthlySurplus = averageIncome - averageSpending;
   const liquidBalance = sumAccountsInBase(accounts.filter((item) => ["checking", "savings", "cash"].includes(item.type)), base, rates, (item) => Math.max(0, item.balance)).total;
   const emergencyMonths = averageSpending > 0 ? liquidBalance / averageSpending : 0;
-  const monthlyGoalCommitments = inScope(data.goals, scope).reduce((sum, goal) => sum + (goal.monthlyContribution || 0), 0);
+  const inBase = (amount: number, currency: CurrencyCode | undefined) => convertToBase(amount, currency || base, base, rates) ?? 0;
+  const monthlyGoalCommitments = inScope(data.goals, scope).reduce((sum, goal) => sum + inBase(goal.monthlyContribution || 0, goal.currency), 0);
   const safeToSpend = Math.max(0, monthlySurplus - monthlyGoalCommitments);
   const includedEvents = inScope(data.plannedEvents, scope).filter((item) => item.includeInPlan && new Date(`${item.date}T12:00:00`) >= new Date());
   const goalForecasts = inScope(data.goals, scope).map((goal) => {
-    const remaining = Math.max(0, goal.target - goal.current);
-    const contribution = Math.max(0, goal.monthlyContribution || Math.min(monthlySurplus / Math.max(1, inScope(data.goals, scope).length), remaining));
+    const remaining = Math.max(0, inBase(goal.target, goal.currency) - inBase(goal.current, goal.currency));
+    const contribution = Math.max(0, inBase(goal.monthlyContribution || 0, goal.currency) || Math.min(monthlySurplus / Math.max(1, inScope(data.goals, scope).length), remaining));
     const monthsRemaining = remaining === 0 ? 0 : contribution > 0 ? Math.ceil(remaining / contribution) : Number.POSITIVE_INFINITY;
-    const plannedCost = includedEvents.filter((event) => event.space === goal.space).reduce((sum, event) => sum + event.amount, 0);
+    const plannedCost = includedEvents.filter((event) => event.space === goal.space).reduce((sum, event) => sum + inBase(event.amount, event.currency), 0);
     const plannedEventDelayMonths = contribution > 0 ? Math.ceil(plannedCost / contribution) : 0;
     const estimated = Number.isFinite(monthsRemaining) ? new Date(new Date().getFullYear(), new Date().getMonth() + monthsRemaining + plannedEventDelayMonths, 1) : null;
     return {

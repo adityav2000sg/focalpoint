@@ -15,9 +15,9 @@ async function mockWorkspace(page: Page, options: { qwenConfigured?: boolean } =
 test("public sign-in and policy pages are usable", async ({ page }) => {
   await page.goto("/login");
   await expect(page.getByRole("button", { name: "Continue with Google" })).toBeVisible();
-  // Apple sign-in is env-gated (NEXT_PUBLIC_APPLE_AUTH_ENABLED); assert it only when the build enables it.
-  const appleButton = page.getByRole("button", { name: "Continue with Apple" });
-  if (await appleButton.count()) await expect(appleButton).toBeVisible();
+  // App Store guideline 4.8: offering Google sign-in obliges an equivalent privacy-preserving
+  // option, so Sign in with Apple must be present unless a build opts out explicitly.
+  await expect(page.getByRole("button", { name: "Continue with Apple" })).toBeVisible();
   await page.getByRole("link", { name: "Privacy" }).click();
   await expect(page.getByRole("heading", { name: "Your finances deserve plain language." })).toBeVisible();
 });

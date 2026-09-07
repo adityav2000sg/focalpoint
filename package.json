@@ -12,7 +12,8 @@
     "ios:sync": "npm run mobile:build && cap sync ios",
     "ios:open": "cap open ios",
     "verify": "npm test && npm run typecheck && npm run build && npm run mobile:build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "store:screenshots": "playwright test e2e/store-screenshots.spec.ts --config playwright.store.config.ts"
   },
   "engines": {
     "node": ">=22.0.0"

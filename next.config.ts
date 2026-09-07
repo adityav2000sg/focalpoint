@@ -2,6 +2,9 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
+  // The dev overlay badge sits over the bottom navigation, so it is hidden only while
+  // rendering App Store listing screenshots. Normal `next dev` keeps the indicator.
+  ...(process.env.STORE_SCREENSHOTS === "1" ? { devIndicators: false as const } : {}),
   poweredByHeader: false,
   turbopack: {
     root: process.cwd(),
