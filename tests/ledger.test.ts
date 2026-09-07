@@ -5,7 +5,12 @@ import {
   Transaction,
   applyTransaction,
   advanceRecurringDate,
+  allExpenseCategories,
   buildHorizon,
+  historyChange,
+  historyWindow,
+  normaliseCategoryName,
+  recordNetWorthPoint,
   convertToBase,
   formatAccountBalance,
   isCurrencyCode,
@@ -463,5 +468,91 @@ describe("goals and events in their own currency", () => {
   it("rejects a restored backup carrying a currency it does not understand", () => {
     const bad = workspace({ goals: [{ id: "g1", name: "X", target: 1, current: 0, targetDate: "2027-01-01", space: "personal", icon: "spark", currency: "XYZ" } as never] });
     expect(isFinanceData(bad)).toBe(false);
+  });
+});
+
+describe("custom categories", () => {
+  it("ships childcare and pets in the base set", () => {
+    const all = allExpenseCategories([]);
+    expect(all).toContain("Childcare");
+    expect(all).toContain("Pets");
+  });
+
+  it("keeps the catch-all last however many are added", () => {
+    expect(allExpenseCategories(["Tuition", "Hobbies"]).at(-1)).toBe("Other");
+  });
+
+  it("will not duplicate a category that already exists, whatever the casing", () => {
+    const all = allExpenseCategories(["pets", "PETS", "Tuition"]);
+    expect(all.filter((item) => item.toLowerCase() === "pets")).toHaveLength(1);
+    expect(all).toContain("Tuition");
+  });
+
+  it("tidies user input before it becomes a category", () => {
+    expect(normaliseCategoryName("  school   fees ")).toBe("School fees");
+    expect(normaliseCategoryName("   ")).toBe("");
+    expect(normaliseCategoryName("x".repeat(60))).toHaveLength(32);
+  });
+});
+
+describe("net worth history", () => {
+  const point = (date: string, netWorth: number) => ({ date, netWorth, liquid: netWorth, investments: 0, liabilities: 0, currency: "SGD" as const });
+
+  it("keeps one point per day, replacing the day's earlier value", () => {
+    let history = recordNetWorthPoint([], point("2026-09-01", 100));
+    history = recordNetWorthPoint(history, point("2026-09-01", 250));
+    expect(history).toHaveLength(1);
+    expect(history[0].netWorth).toBe(250);
+  });
+
+  it("sorts points that arrive out of order", () => {
+    let history = recordNetWorthPoint([], point("2026-09-05", 3));
+    history = recordNetWorthPoint(history, point("2026-09-01", 1));
+    expect(history.map((item) => item.date)).toEqual(["2026-09-01", "2026-09-05"]);
+  });
+
+  it("drops the oldest points once the cap is reached", () => {
+    let history: import("@/lib/finance").NetWorthPoint[] = [];
+    for (let day = 1; day <= 5; day += 1) history = recordNetWorthPoint(history, point(`2026-09-0${day}`, day), 3);
+    expect(history.map((item) => item.date)).toEqual(["2026-09-03", "2026-09-04", "2026-09-05"]);
+  });
+
+  it("windows to a trailing range without touching what is stored", () => {
+    const stored = [point("2026-08-01", 1), point("2026-09-01", 2), point("2026-09-05", 3)];
+    // 30 days before 2026-09-07 is 2026-08-08, so the August point falls outside it.
+    expect(historyWindow(stored, 30, "2026-09-07").map((item) => item.date)).toEqual(["2026-09-01", "2026-09-05"]);
+    expect(historyWindow(stored, 90, "2026-09-07").map((item) => item.date)).toEqual(["2026-08-01", "2026-09-01", "2026-09-05"]);
+    // 3 days back is 2026-09-04, which leaves only the most recent point.
+    expect(historyWindow(stored, 3, "2026-09-07").map((item) => item.date)).toEqual(["2026-09-05"]);
+    expect(stored).toHaveLength(3);
+  });
+
+  it("reports change across a window, and nothing when there is only one point", () => {
+    expect(historyChange([point("2026-09-01", 100), point("2026-09-05", 150)])).toMatchObject({ delta: 50, percent: 50 });
+    expect(historyChange([point("2026-09-01", 100)])).toBeNull();
+  });
+
+  it("does not divide by a zero starting balance", () => {
+    expect(historyChange([point("2026-09-01", 0), point("2026-09-05", 40)])).toMatchObject({ delta: 40, percent: null });
+  });
+});
+
+describe("recurring income", () => {
+  const base = createEmptyFinanceData({ name: "P", householdName: "H" });
+  const item = (over: Partial<import("@/lib/finance").RecurringItem>) => ({
+    id: "r1", name: "Salary", amount: 6000, cadence: "monthly" as const, nextDate: "2026-09-25",
+    accountId: "a1", category: "Income", space: "personal" as const, active: true, ...over,
+  });
+
+  it("does not count a scheduled salary as a fixed cost", () => {
+    const forecast = buildForecast({ ...base, recurring: [item({ type: "income" })] }, "personal");
+    expect(forecast.recurringCost).toBe(0);
+    expect(forecast.recurringIncome).toBe(6000);
+  });
+
+  it("still treats an item saved before income existed as an expense", () => {
+    const forecast = buildForecast({ ...base, recurring: [item({ type: undefined, name: "Rent" })] }, "personal");
+    expect(forecast.recurringCost).toBe(6000);
+    expect(forecast.recurringIncome).toBe(0);
   });
 });

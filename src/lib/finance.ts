@@ -112,6 +112,8 @@ export interface Goal {
 export interface RecurringItem {
   id: string;
   name: string;
+  /** Absent means expense, so items saved before income was supported still load. */
+  type?: "expense" | "income";
   amount: number;
   cadence: "monthly" | "quarterly" | "yearly";
   nextDate: string;
@@ -167,6 +169,7 @@ export interface FinanceData {
     householdStartedAt?: string;
     voiceLocale?: string;
     voiceLexicon?: string[];
+    customCategories?: string[];
     aiEnabled?: boolean;
     voiceAiEnabled?: boolean;
     baseCurrency?: CurrencyCode;
@@ -178,21 +181,92 @@ export interface FinanceData {
   goals: Goal[];
   recurring: RecurringItem[];
   spendingPlans: SpendingPlan[];
+  /** Daily net-worth points, oldest first. Absent on workspaces saved before history existed. */
+  history?: NetWorthPoint[];
   plannedEvents: PlannedEvent[];
   inbox: InboxItem[];
 }
 
-export const expenseCategories = [
+export interface NetWorthPoint {
+  /** Local calendar day, YYYY-MM-DD. One point per day. */
+  date: string;
+  netWorth: number;
+  liquid: number;
+  investments: number;
+  liabilities: number;
+  currency: CurrencyCode;
+}
+
+/** Two years of daily points is enough to draw any range the app offers without growing without bound. */
+export const MAX_HISTORY_POINTS = 730;
+
+/**
+ * Appends today's point, replacing an existing one for the same day so the series holds at
+ * most one value per date and always reflects the latest balances. Points are kept sorted
+ * by date because a restored backup or a device with a wrong clock can arrive out of order.
+ */
+export function recordNetWorthPoint(history: NetWorthPoint[] | undefined, point: NetWorthPoint, limit = MAX_HISTORY_POINTS): NetWorthPoint[] {
+  const withoutToday = (history || []).filter((item) => item.date !== point.date);
+  const next = [...withoutToday, point].sort((a, b) => a.date.localeCompare(b.date));
+  return next.length > limit ? next.slice(next.length - limit) : next;
+}
+
+/** Points within the trailing window, used to scope the chart without mutating stored history. */
+export function historyWindow(history: NetWorthPoint[] | undefined, days: number, today = todayIso()): NetWorthPoint[] {
+  if (!history?.length) return [];
+  const cutoff = new Date(`${today}T12:00:00`);
+  cutoff.setDate(cutoff.getDate() - days);
+  const from = cutoff.toISOString().slice(0, 10);
+  return history.filter((item) => item.date >= from);
+}
+
+/** Absolute and proportional change across a window; null when there is nothing to compare against. */
+export function historyChange(points: NetWorthPoint[]) {
+  if (points.length < 2) return null;
+  const first = points[0].netWorth;
+  const last = points[points.length - 1].netWorth;
+  const delta = last - first;
+  return { delta, percent: first === 0 ? null : (delta / Math.abs(first)) * 100, from: points[0].date, to: points[points.length - 1].date };
+}
+
+export const baseExpenseCategories = [
   "Food & dining",
   "Groceries",
   "Transport",
   "Home",
   "Health",
+  "Childcare",
+  "Pets",
   "Shopping",
   "Travel",
   "Entertainment",
   "Other",
 ];
+
+/** Kept as an alias so existing imports and any saved data keep working. */
+export const expenseCategories = baseExpenseCategories;
+
+export const MAX_CUSTOM_CATEGORIES = 24;
+
+/** Trimmed, de-duplicated against the base set, and case-insensitive so "Pets" cannot be added twice. */
+export function normaliseCategoryName(value: string) {
+  const trimmed = value.trim().replace(/\s+/g, " ").slice(0, 32);
+  if (!trimmed) return "";
+  return trimmed[0].toUpperCase() + trimmed.slice(1);
+}
+
+export function allExpenseCategories(custom: string[] | undefined) {
+  const seen = new Set(baseExpenseCategories.map((item) => item.toLowerCase()));
+  const extra = (custom || []).filter((item) => {
+    const key = item.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  // "Other" stays last so the list always ends in the catch-all.
+  const base = baseExpenseCategories.filter((item) => item !== "Other");
+  return [...base, ...extra, "Other"];
+}
 
 export const categoryColors: Record<string, string> = {
   "Food & dining": "#ef8354",
@@ -239,6 +313,7 @@ export function createEmptyFinanceData({ name, householdName }: { name: string; 
     goals: [],
     recurring: [],
     spendingPlans: [],
+    history: [],
     plannedEvents: [],
     inbox: [],
   };
@@ -256,7 +331,9 @@ export function isFinanceData(input: unknown): input is FinanceData {
   if (!Array.isArray(candidate.accounts) || !candidate.accounts.every((item) => record(item) && text(item.id) && text(item.name) && text(item.institution) && text(item.type) && space(item.space) && text(item.owner) && amount(item.balance) && isCurrencyCode(item.currency))) return false;
   if (!Array.isArray(candidate.transactions) || !candidate.transactions.every((item) => record(item) && text(item.id) && ["expense", "income", "transfer"].includes(String(item.type)) && amount(item.amount) && item.amount > 0 && text(item.date) && text(item.description) && text(item.category) && text(item.accountId) && space(item.space) && text(item.source) && (item.affectsBalance === undefined || typeof item.affectsBalance === "boolean"))) return false;
   if (!Array.isArray(candidate.goals) || !candidate.goals.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.target) && amount(item.current) && text(item.targetDate) && space(item.space) && text(item.icon) && (item.currency === undefined || isCurrencyCode(item.currency)))) return false;
-  if (!Array.isArray(candidate.recurring) || !candidate.recurring.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.amount) && ["monthly", "quarterly", "yearly"].includes(String(item.cadence)) && text(item.nextDate) && text(item.accountId) && text(item.category) && space(item.space) && typeof item.active === "boolean")) return false;
+  if (!Array.isArray(candidate.recurring) || !candidate.recurring.every((item) => record(item) && text(item.id) && text(item.name) && (item.type === undefined || item.type === "expense" || item.type === "income") && amount(item.amount) && ["monthly", "quarterly", "yearly"].includes(String(item.cadence)) && text(item.nextDate) && text(item.accountId) && text(item.category) && space(item.space) && typeof item.active === "boolean")) return false;
+  if (candidate.history !== undefined && (!Array.isArray(candidate.history) || !candidate.history.every((item) => record(item) && text(item.date) && amount(item.netWorth) && amount(item.liquid) && amount(item.investments) && amount(item.liabilities) && isCurrencyCode(item.currency)))) return false;
+  if (profile.customCategories !== undefined && (!Array.isArray(profile.customCategories) || !profile.customCategories.every(text))) return false;
   if (!Array.isArray(candidate.spendingPlans) || !candidate.spendingPlans.every((item) => record(item) && text(item.id) && text(item.category) && amount(item.monthlyLimit) && space(item.space))) return false;
   if (!Array.isArray(candidate.plannedEvents) || !candidate.plannedEvents.every((item) => record(item) && text(item.id) && text(item.name) && amount(item.amount) && text(item.date) && text(item.kind) && space(item.space) && typeof item.includeInPlan === "boolean" && (item.currency === undefined || isCurrencyCode(item.currency)))) return false;
   if (!Array.isArray(candidate.inbox) || !candidate.inbox.every((item) => record(item) && text(item.id) && text(item.description) && amount(item.amount) && text(item.date) && text(item.source) && ["expense", "income", "transfer"].includes(String(item.suggestedType)) && text(item.suggestedCategory) && space(item.space) && amount(item.confidence) && text(item.status) && text(item.reason) && (item.affectsBalance === undefined || typeof item.affectsBalance === "boolean"))) return false;
@@ -398,6 +475,7 @@ export interface FinanceForecast {
   averageSpending: number;
   monthlySurplus: number;
   recurringCost: number;
+  recurringIncome: number;
   liquidBalance: number;
   emergencyMonths: number;
   safeToSpend: number;
@@ -443,7 +521,11 @@ export function buildForecast(data: FinanceData, scope: ViewScope): FinanceForec
   const divisor = Math.max(1, completeishMonths.length);
   const averageIncome = completeishMonths.reduce((sum, item) => sum + item.income, 0) / divisor;
   const averageSpending = completeishMonths.reduce((sum, item) => sum + item.spending, 0) / divisor;
-  const recurringCost = inScope(data.recurring, scope).filter((item) => item.active).reduce((sum, item) => sum + monthlyEquivalent(item), 0);
+  const activeRecurring = inScope(data.recurring, scope).filter((item) => item.active);
+  // A scheduled salary is not a cost. Summing every recurring item as spending would have
+  // reported a household with regular income as having a large fixed outgoing.
+  const recurringCost = activeRecurring.filter((item) => item.type !== "income").reduce((sum, item) => sum + monthlyEquivalent(item), 0);
+  const recurringIncome = activeRecurring.filter((item) => item.type === "income").reduce((sum, item) => sum + monthlyEquivalent(item), 0);
   // Not floored at zero: spending more than you earn must report as a deficit.
   const monthlySurplus = averageIncome - averageSpending;
   const liquidBalance = sumAccountsInBase(accounts.filter((item) => ["checking", "savings", "cash"].includes(item.type)), base, rates, (item) => Math.max(0, item.balance)).total;
@@ -473,6 +555,7 @@ export function buildForecast(data: FinanceData, scope: ViewScope): FinanceForec
     averageSpending,
     monthlySurplus,
     recurringCost,
+    recurringIncome,
     liquidBalance,
     emergencyMonths,
     safeToSpend,
