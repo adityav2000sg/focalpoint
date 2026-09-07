@@ -170,6 +170,7 @@ export interface FinanceData {
     voiceLocale?: string;
     voiceLexicon?: string[];
     customCategories?: string[];
+    onboardedAt?: string;
     appLockEnabled?: boolean;
     remindersEnabled?: boolean;
     reminderHour?: number;

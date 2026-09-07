@@ -18,4 +18,19 @@ describe("mergeFinanceWorkspaces", () => {
     const base = { ...empty, accounts: [account] };
     expect(mergeFinanceWorkspaces(base, { ...base, accounts: [] }, base).accounts).toEqual([]);
   });
+
+  it("keeps net-worth history added on the other device when this device did not change it", () => {
+    const base = createEmptyFinanceData({ name: "Peter", householdName: "Home" });
+    const point = { date: "2026-09-07", netWorth: 12000, liquid: 7000, investments: 5000, liabilities: 0, currency: "SGD" as const };
+    const remote = { ...base, history: [point] };
+    expect(mergeFinanceWorkspaces(base, base, remote).history).toEqual([point]);
+  });
+
+  it("keeps this device's explicit history update during a conflict", () => {
+    const base = createEmptyFinanceData({ name: "Peter", householdName: "Home" });
+    const localPoint = { date: "2026-09-07", netWorth: 14000, liquid: 9000, investments: 5000, liabilities: 0, currency: "SGD" as const };
+    const remotePoint = { ...localPoint, netWorth: 13000, liquid: 8000 };
+    const merged = mergeFinanceWorkspaces(base, { ...base, history: [localPoint] }, { ...base, history: [remotePoint] });
+    expect(merged.history).toEqual([localPoint]);
+  });
 });

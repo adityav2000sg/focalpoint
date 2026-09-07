@@ -43,5 +43,6 @@ export function mergeFinanceWorkspaces(base: FinanceData, local: FinanceData, re
     spendingPlans: mergeRecord(base.spendingPlans, local.spendingPlans, remote.spendingPlans),
     plannedEvents: mergeRecord(base.plannedEvents, local.plannedEvents, remote.plannedEvents),
     inbox: mergeRecord(base.inbox, local.inbox, remote.inbox),
+    history: same(local.history, base.history) ? remote.history : local.history,
   };
 }

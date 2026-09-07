@@ -103,12 +103,27 @@ function mergeSpaces(personal: SpaceRow | null, household: SpaceRow | null): Par
     spendingPlans: [...(personalData.spendingPlans || []), ...(householdData.spendingPlans || [])],
     plannedEvents: [...(personalData.plannedEvents || []), ...(householdData.plannedEvents || [])],
     inbox: [...(personalData.inbox || []), ...(householdData.inbox || [])],
+    history: personalData.history || [],
   };
 }
 
 function splitSpace(data: FinanceData, space: SpaceId): Partial<FinanceData> {
   const profile = space === "personal"
-    ? { name: data.profile.name, voiceLocale: data.profile.voiceLocale, voiceLexicon: data.profile.voiceLexicon, aiEnabled: data.profile.aiEnabled, voiceAiEnabled: data.profile.voiceAiEnabled }
+    ? {
+      name: data.profile.name,
+      voiceLocale: data.profile.voiceLocale,
+      voiceLexicon: data.profile.voiceLexicon,
+      customCategories: data.profile.customCategories,
+      onboardedAt: data.profile.onboardedAt,
+      appLockEnabled: data.profile.appLockEnabled,
+      remindersEnabled: data.profile.remindersEnabled,
+      reminderHour: data.profile.reminderHour,
+      aiEnabled: data.profile.aiEnabled,
+      voiceAiEnabled: data.profile.voiceAiEnabled,
+      baseCurrency: data.profile.baseCurrency,
+      fxRates: data.profile.fxRates,
+      fxUpdatedAt: data.profile.fxUpdatedAt,
+    }
     : { partnerName: data.profile.partnerName, partnerEmail: data.profile.partnerEmail, householdName: data.profile.householdName, householdStartedAt: data.profile.householdStartedAt };
   return {
     version: 3,
@@ -120,6 +135,7 @@ function splitSpace(data: FinanceData, space: SpaceId): Partial<FinanceData> {
     spendingPlans: data.spendingPlans.filter((item) => item.space === space),
     plannedEvents: data.plannedEvents.filter((item) => item.space === space),
     inbox: data.inbox.filter((item) => item.space === space),
+    history: space === "personal" ? data.history : undefined,
   };
 }
 

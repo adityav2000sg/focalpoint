@@ -106,6 +106,7 @@ import { defaultReminderSettings, planReminders } from "@/lib/reminders";
 import { clearReminders, syncReminders } from "@/lib/native/reminders";
 import { checkBiometry } from "@/lib/native/appLock";
 import AppLock from "@/components/AppLock";
+import OnboardingWizard, { type OnboardingResult } from "@/components/OnboardingWizard";
 import { hasTogetherAccess, type TogetherMember } from "@/lib/together";
 import { mergeFinanceWorkspaces } from "@/lib/sync";
 
@@ -372,6 +373,44 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
 
   const fx: FxContext = useMemo(() => ({ base: baseCurrency, rates: fxRates }), [baseCurrency, fxRates]);
   const categories = useMemo(() => allExpenseCategories(data.profile.customCategories), [data.profile.customCategories]);
+  const [wizardBiometry, setWizardBiometry] = useState<{ available: boolean; label: string }>({ available: false, label: "Face ID" });
+  useEffect(() => { void checkBiometry().then(setWizardBiometry); }, []);
+  // Shown once, for a workspace with nothing in it. Dismissing marks the profile so a
+  // returning user who deleted every account is not put back through setup.
+  const showWizard = syncStatus !== "loading" && !data.profile.onboardedAt && data.accounts.length === 0;
+
+  function saveOnboardingImmediately(next: FinanceData) {
+    latestData.current = next;
+    setData(next);
+    window.localStorage.setItem(storageKey, JSON.stringify(next));
+    savePending.current = true;
+    setSyncStatus((current) => current === "offline" ? "offline" : "saving");
+    void persistWorkspace();
+  }
+
+  function completeOnboarding(result: OnboardingResult) {
+    const current = latestData.current;
+    saveOnboardingImmediately({
+      ...current,
+      profile: {
+        ...current.profile,
+        onboardedAt: todayIso(),
+        baseCurrency: result.baseCurrency,
+        appLockEnabled: result.appLockEnabled,
+        remindersEnabled: result.remindersEnabled,
+      },
+      accounts: [...current.accounts, result.account],
+      recurring: [...current.recurring, ...[result.salary, result.bill].filter((item): item is RecurringItem => item !== null)],
+      goals: result.goal ? [...current.goals, result.goal] : current.goals,
+    });
+    notify("Your foundation is set. Everything here is editable.");
+  }
+
+  function skipOnboarding() {
+    const current = latestData.current;
+    saveOnboardingImmediately({ ...current, profile: { ...current.profile, onboardedAt: todayIso() } });
+  }
+
   const netWorth = sumAccountsInBase(scopedAccounts, baseCurrency, fxRates).total;
 
   // History is recorded across the whole workspace, not the scope being viewed, so that
@@ -457,12 +496,24 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
     setEditingTransaction(null);
     setCaptureDraft(type ? { type } : null);
     if (type) setActivityFilter(type);
+    if (!data.accounts.length) {
+      setAfterAccount("transaction");
+      setModal("account");
+      notify("First add the account, card, or cash balance this transaction belongs to.");
+      return;
+    }
     setModal("transaction");
   }
 
   function openCaptureDraft(draft: Partial<Transaction>) {
     setEditingTransaction(null);
     setCaptureDraft(draft);
+    if (!data.accounts.length) {
+      setAfterAccount("transaction");
+      setModal("account");
+      notify("Add the account used for this transaction, then you can review what you captured.");
+      return;
+    }
     setModal("transaction");
   }
 
@@ -619,6 +670,11 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
   }
 
   function openImport() {
+    if (!data.accounts.length) {
+      openRequiredAccount("import");
+      notify("First add the account these imported transactions belong to.");
+      return;
+    }
     setModal("import");
   }
 
@@ -642,7 +698,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
     setModal(null);
     setMoneySection("inbox");
     setActiveView("money");
-    notify(`${staged.length} item${staged.length === 1 ? "" : "s"} added to the review inbox.`);
+    notify(`${staged.length} imported item${staged.length === 1 ? " is" : "s are"} ready to check.`);
   }
 
   function approveInbox(item: InboxItem) {
@@ -654,12 +710,12 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
       affectsBalance: item.affectsBalance,
     };
     setData((current) => ({ ...current, accounts: applyTransaction(current.accounts, transaction), transactions: [transaction, ...current.transactions], inbox: current.inbox.filter((candidate) => candidate.id !== item.id) }));
-    notify("Inbox item approved and added to the ledger.");
+    notify("Imported transaction added to your activity.");
   }
 
   function dismissInbox(item: InboxItem) {
     setData((current) => ({ ...current, inbox: current.inbox.filter((candidate) => candidate.id !== item.id) }));
-    notify("Inbox item dismissed.");
+    notify("Imported item removed.");
   }
 
   function openNewGoal() {
@@ -688,6 +744,11 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
 
   function openNewRecurring() {
     setEditingRecurring(null);
+    if (!data.accounts.length) {
+      openRequiredAccount("recurring");
+      notify("First add the account used for this recurring payment.");
+      return;
+    }
     setModal("recurring");
   }
 
@@ -745,7 +806,19 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
           : [...current.spendingPlans, { id: uid("plan"), category, monthlyLimit, space: planScope }],
       };
     });
-    notify("Spending plan updated.");
+    notify("Monthly budget updated.");
+  }
+
+  function deleteSpendingPlan(plan: FinanceData["spendingPlans"][number]) {
+    setConfirmation({
+      title: `Remove the ${plan.category} budget?`,
+      copy: "This removes only the monthly limit. Your existing transactions and balances stay unchanged.",
+      actionLabel: "Remove budget",
+      onConfirm: () => {
+        setData((current) => ({ ...current, spendingPlans: current.spendingPlans.filter((item) => item.id !== plan.id) }));
+        notify("Monthly budget removed.");
+      },
+    });
   }
 
   function fundGoal(goalId: string) {
@@ -904,7 +977,16 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
   if (!hydrated) return <AppLoading displayName={viewer.displayName} />;
 
   return (
-    <LifetimeApiContext.Provider value={apiContext}><AppLock enabled={data.profile.appLockEnabled === true}><div className="app-shell">
+    <LifetimeApiContext.Provider value={apiContext}><AppLock enabled={data.profile.appLockEnabled === true}>
+      {showWizard && (
+        <OnboardingWizard
+          displayName={data.profile.name}
+          biometryAvailable={wizardBiometry.available}
+          biometryLabel={wizardBiometry.label}
+          onComplete={completeOnboarding}
+          onSkip={skipOnboarding}
+        />
+      )}<div className="app-shell" inert={showWizard ? true : undefined} aria-hidden={showWizard || undefined}>
       <aside className={`sidebar ${mobileMenu ? "sidebar-open" : ""}`}>
         <div className="brand-lockup">
           <span className="brand-mark"><Leaf size={20} strokeWidth={2.4} /></span>
@@ -1071,6 +1153,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
               period={activityPeriod}
               setPeriod={setActivityPeriod}
               onSavePlan={saveSpendingPlan}
+              onDeletePlan={deleteSpendingPlan}
               onExport={exportData}
               onRestore={restoreBackup}
               onReset={clearWorkspace}
@@ -1134,7 +1217,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
       {modal === "goal" && <GoalModal initial={editingGoal} scope={scope} canShare={hasTogether} defaultCurrency={baseCurrency} onClose={() => { setModal(null); setEditingGoal(null); }} onSubmit={saveGoal} onDelete={editingGoal ? () => deleteGoal(editingGoal) : undefined} />}
       {modal === "event" && <PlannedEventModal initial={editingEvent} scope={scope} canShare={hasTogether} defaultCurrency={baseCurrency} onClose={() => { setModal(null); setEditingEvent(null); }} onSubmit={savePlannedEvent} onDelete={editingEvent ? () => deletePlannedEvent(editingEvent) : undefined} />}
       {modal === "recurring" && <RecurringModal initial={editingRecurring} scope={scope} accounts={data.accounts} categories={categories} onNeedAccount={() => openRequiredAccount("recurring")} onClose={() => { setModal(null); setEditingRecurring(null); }} onSubmit={saveRecurring} onDelete={editingRecurring ? () => deleteRecurring(editingRecurring) : undefined} />}
-      {modal === "import" && <ImportModal data={data} scope={scope} onNeedAccount={() => openRequiredAccount("import")} onClose={() => setModal(null)} setData={setData} onStage={stageInbox} notify={notify} />}
+      {modal === "import" && <ImportModal data={data} scope={scope} onNeedAccount={() => openRequiredAccount("import")} onManual={() => openNewTransaction()} onClose={() => setModal(null)} setData={setData} onStage={stageInbox} notify={notify} />}
       {modal === "household" && <HouseholdModal profile={data.profile} members={householdMembers} viewerEmail={viewer.email} inviteUrl={inviteUrl} onClose={() => setModal(null)} onSubmit={saveHousehold} onManage={confirmTogetherAction} notify={notify} />}
       {modal === "settings" && <SettingsModal profile={data.profile} currenciesInUse={[...new Set(data.accounts.map((account) => account.currency))]} hasTogether={hasTogether} onClose={() => setModal(null)} onProfile={(profile) => setData((current) => ({ ...current, profile }))} onTogether={() => setModal("household")} onExport={exportData} onRestore={restoreBackup} onRestoreVersion={requestVersionRestore} onClear={() => { setModal(null); clearWorkspace(); }} onDeleteAccount={requestAccountDeletion} />}
 
@@ -1560,7 +1643,7 @@ function Overview({
   );
 }
 
-function MoneyView({ section, setSection, fx, history, categories, accounts, allAccounts, transactions, monthTransactions, plans, inbox, netWorth, monthIncome, monthSpending, search, setSearch, onAdd, onImport, onApproveInbox, onDismissInbox, onEditInbox, onDelete, onEditTransaction, onAddAccount, onEditAccount, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod, onSavePlan, onExport, onRestore, onReset, scope }: {
+function MoneyView({ section, setSection, fx, history, categories, accounts, allAccounts, transactions, monthTransactions, plans, inbox, netWorth, monthIncome, monthSpending, search, setSearch, onAdd, onImport, onApproveInbox, onDismissInbox, onEditInbox, onDelete, onEditTransaction, onAddAccount, onEditAccount, selectedMonthLabel, selectedMonth, setSelectedMonth, shiftMonth, mode, setMode, filter, setFilter, period, setPeriod, onSavePlan, onDeletePlan, onExport, onRestore, onReset, scope }: {
   fx: FxContext;
   history: NetWorthPoint[] | undefined;
   categories: string[];
@@ -1597,6 +1680,7 @@ function MoneyView({ section, setSection, fx, history, categories, accounts, all
   period: ActivityPeriod;
   setPeriod: (period: ActivityPeriod) => void;
   onSavePlan: (category: string, amount: number, scope: SpaceId) => void;
+  onDeletePlan: (plan: FinanceData["spendingPlans"][number]) => void;
   onExport: () => void;
   onRestore: (file: File) => void;
   onReset: () => void;
@@ -1606,8 +1690,8 @@ function MoneyView({ section, setSection, fx, history, categories, accounts, all
     { id: "snapshot", label: "Snapshot", icon: Gauge },
     { id: "activity", label: "Activity", icon: ArrowLeftRight },
     { id: "accounts", label: "Accounts", icon: WalletCards },
-    { id: "inbox", label: "Review", icon: Layers3, count: inbox.length },
-    { id: "plan", label: "Spending plan", icon: PiggyBank },
+    { id: "inbox", label: "Imports", icon: Layers3, count: inbox.length },
+    { id: "plan", label: "Budget", icon: PiggyBank },
   ];
   const assets = accounts.filter((account) => account.balance >= 0);
   const liabilities = accounts.filter((account) => account.balance < 0);
@@ -1639,8 +1723,8 @@ function MoneyView({ section, setSection, fx, history, categories, accounts, all
             </div>
           </section>
           <section className="panel spending-panel">
-            <PanelHeading eyebrow="Plan vs actual" title="This month" action="Edit plan" onAction={() => setSection("plan")} />
-            <SpendingPlanList plans={plans} transactions={monthTransactions} categories={categories} compact onSave={onSavePlan} scope={scope} />
+            <PanelHeading eyebrow="Budget vs actual" title="This month" action="Edit budget" onAction={() => setSection("plan")} />
+            <SpendingPlanList plans={plans} transactions={monthTransactions} categories={categories} compact onSave={onSavePlan} onDelete={onDeletePlan} scope={scope} />
           </section>
         </div>
         <section className="data-controls"><div><p className="eyebrow">Your data</p><strong>Back up, restore, or start over.</strong><span>Restore replaces this workspace from a Lifetime JSON backup. Clearing preserves your profile and Together setup.</span></div><div><button className="secondary-button" onClick={onExport}><Download size={16} /> Download backup</button><label className="secondary-button file-button"><Upload size={16} /> Restore backup<input className="file-input" type="file" accept="application/json,.json" onChange={(event) => { const file = event.target.files?.[0]; if (file) onRestore(file); event.target.value = ""; }} /></label><button className="secondary-button danger-button" onClick={onReset}><Trash2 size={16} /> Clear workspace</button></div></section>
@@ -1649,7 +1733,7 @@ function MoneyView({ section, setSection, fx, history, categories, accounts, all
       {section === "activity" && <ActivityView transactions={transactions} accounts={allAccounts} fx={fx} search={search} setSearch={setSearch} onAdd={onAdd} onImport={onImport} onDelete={onDelete} onEdit={onEditTransaction} selectedMonthLabel={selectedMonthLabel} selectedMonth={selectedMonth} setSelectedMonth={setSelectedMonth} shiftMonth={shiftMonth} mode={mode} setMode={setMode} filter={filter} setFilter={setFilter} period={period} setPeriod={setPeriod} />}
       {section === "accounts" && <AccountsView accounts={accounts} netWorth={netWorth} fx={fx} onAdd={onAddAccount} onEdit={onEditAccount} />}
       {section === "inbox" && <InboxView inbox={inbox} accounts={allAccounts} onImport={onImport} onApprove={onApproveInbox} onDismiss={onDismissInbox} onEdit={onEditInbox} />}
-      {section === "plan" && <section className="panel plan-editor-panel"><PanelHeading eyebrow="A plan, not a punishment" title="Monthly spending boundaries" /><SpendingPlanList plans={plans} transactions={monthTransactions} categories={categories} onSave={onSavePlan} scope={scope} /></section>}
+      {section === "plan" && <BudgetView plans={plans} transactions={monthTransactions} categories={categories} monthSpending={monthSpending} fx={fx} onSave={onSavePlan} onDelete={onDeletePlan} scope={scope} />}
     </div>
   );
 }
@@ -1657,11 +1741,11 @@ function MoneyView({ section, setSection, fx, history, categories, accounts, all
 function InboxView({ inbox, accounts, onImport, onApprove, onDismiss, onEdit }: { inbox: InboxItem[]; accounts: Account[]; onImport: () => void; onApprove: (item: InboxItem) => void; onDismiss: (item: InboxItem) => void; onEdit: (item: InboxItem) => void }) {
   return (
     <div className="page-stack">
-      <PageHeading eyebrow="Human in the loop" title="Review inbox" copy="Imported money waits here until you approve it. Nothing changes a balance silently.">
-        <button className="primary-button" onClick={onImport}><Upload size={17} /> Bring in transactions</button>
+      <PageHeading eyebrow="Optional imports" title="Imported transactions" copy="Check spreadsheet rows and scanned receipts here before adding them to your activity.">
+        <button className="primary-button" onClick={onImport}><Upload size={17} /> Import transactions</button>
       </PageHeading>
       <section className="panel inbox-panel">
-        <div className="inbox-intro"><span className="inbox-source"><ShieldCheck size={20} /></span><div><strong>{inbox.length ? `${inbox.length} item${inbox.length === 1 ? "" : "s"} waiting for you` : "Your review inbox is clear"}</strong><p>Approve adds the item to the ledger. Statement history leaves a current balance unchanged; new receipts update it. Dismiss never touches your finances.</p></div></div>
+        <div className="inbox-intro"><span className="inbox-source"><ShieldCheck size={20} /></span><div><strong>{inbox.length ? `${inbox.length} imported item${inbox.length === 1 ? "" : "s"} to check` : "No imports waiting"}</strong><p>Imports can contain the wrong date, category, or account. Nothing here becomes real activity until you choose Add to activity. Removing an item never changes your finances.</p></div></div>
         <div className="inbox-list">
           {inbox.map((item) => {
             const account = accounts.find((candidate) => candidate.id === item.suggestedAccountId);
@@ -1670,25 +1754,46 @@ function InboxView({ inbox, accounts, onImport, onApprove, onDismiss, onEdit }: 
                 <span className="inbox-source">{item.source === "sheet" ? <FileSpreadsheet size={19} /> : <Upload size={19} />}</span>
                 <span className="inbox-copy"><strong>{item.description}</strong><small>{formatDate(item.date, true)} · {account?.name || "Account unavailable"}</small><span>{item.suggestedType} · {item.suggestedCategory} · {Math.round(item.confidence * 100)}% match</span></span>
                 <strong>{item.suggestedType === "income" ? "+" : item.suggestedType === "expense" ? "−" : ""}{formatMoney(item.amount)}</strong>
-                <span className="inbox-actions"><button className="secondary-button" onClick={() => onEdit(item)}><Edit3 size={15} /> Edit</button><button className="secondary-button" onClick={() => onDismiss(item)}><X size={15} /> Dismiss</button><button className="primary-button" onClick={() => onApprove(item)} disabled={!account}><Check size={15} /> Approve</button></span>
+                <span className="inbox-actions"><button className="secondary-button" onClick={() => onEdit(item)}><Edit3 size={15} /> Fix details</button><button className="secondary-button" onClick={() => onDismiss(item)}><X size={15} /> Remove</button><button className="primary-button" onClick={() => onApprove(item)} disabled={!account}><Check size={15} /> Add to activity</button></span>
               </div>
             );
           })}
-          {!inbox.length && <EmptyState icon={<Layers3 />} title="Nothing needs review" copy="Import a CSV or paste rows from Google Sheets, then choose Review first." />}
+          {!inbox.length && <EmptyState icon={<Layers3 />} title="Nothing imported yet" copy="This is only for transactions you choose to check before adding, including scanned receipts." />}
         </div>
       </section>
     </div>
   );
 }
 
-function SpendingPlanList({ plans, transactions, categories, compact = false, onSave, scope }: { plans: FinanceData["spendingPlans"]; transactions: Transaction[]; categories: string[]; compact?: boolean; onSave: (category: string, amount: number, scope: SpaceId) => void; scope: ViewScope }) {
+function BudgetView({ plans, transactions, categories, monthSpending, fx, onSave, onDelete, scope }: { plans: FinanceData["spendingPlans"]; transactions: Transaction[]; categories: string[]; monthSpending: number; fx: FxContext; onSave: (category: string, amount: number, scope: SpaceId) => void; onDelete: (plan: FinanceData["spendingPlans"][number]) => void; scope: ViewScope }) {
+  const planned = plans.reduce((total, plan) => total + plan.monthlyLimit, 0);
+  const remaining = planned - monthSpending;
+  return (
+    <div className="budget-page">
+      <section className="budget-hero">
+        <div><p className="eyebrow">Monthly budget</p><h2>Decide what feels comfortable, then adjust as life changes.</h2><p>Budgets are guides—not locked money. Deleting one never removes a transaction.</p></div>
+        <div className="budget-summary" aria-label="Budget summary">
+          <span><small>Budgeted</small><strong>{formatAccountBalance(planned, fx.base, fx.base)}</strong></span>
+          <span><small>Spent</small><strong>{formatAccountBalance(monthSpending, fx.base, fx.base)}</strong></span>
+          <span className={remaining < 0 ? "budget-negative" : ""}><small>{remaining < 0 ? "Over" : "Remaining"}</small><strong>{formatAccountBalance(Math.abs(remaining), fx.base, fx.base)}</strong></span>
+        </div>
+      </section>
+      <section className="panel plan-editor-panel">
+        <PanelHeading eyebrow="Category limits" title="Your monthly budget" />
+        <SpendingPlanList plans={plans} transactions={transactions} categories={categories} onSave={onSave} onDelete={onDelete} scope={scope} />
+      </section>
+    </div>
+  );
+}
+
+function SpendingPlanList({ plans, transactions, categories, compact = false, onSave, onDelete, scope }: { plans: FinanceData["spendingPlans"]; transactions: Transaction[]; categories: string[]; compact?: boolean; onSave: (category: string, amount: number, scope: SpaceId) => void; onDelete: (plan: FinanceData["spendingPlans"][number]) => void; scope: ViewScope }) {
   const spending = new Map<string, number>();
   transactions.filter((item) => item.type === "expense").forEach((item) => spending.set(item.category, (spending.get(item.category) || 0) + item.amount));
   return (
     <div className="plan-list">
       {plans.length
-        ? plans.slice(0, compact ? 5 : undefined).map((plan) => <SpendingPlanRow key={plan.id} plan={plan} spent={spending.get(plan.category) || 0} onSave={onSave} />)
-        : <EmptyState icon={<PiggyBank />} title="No spending plan yet" copy={compact ? "Set a monthly limit in the spending plan tab and it will be tracked here." : "Choose a category and set a monthly limit to track your spending against it."} />}
+        ? plans.slice(0, compact ? 5 : undefined).map((plan) => <SpendingPlanRow key={plan.id} plan={plan} spent={spending.get(plan.category) || 0} onSave={onSave} onDelete={onDelete} compact={compact} />)
+        : <EmptyState icon={<PiggyBank />} title="No monthly budget yet" copy={compact ? "Set category limits in the Budget tab and they will be tracked here." : "Start with one flexible category. You can edit or remove it at any time."} />}
       {!compact && <AddSpendingPlan plans={plans} scope={scope} categories={categories} onSave={onSave} />}
     </div>
   );
@@ -1715,16 +1820,16 @@ function AddSpendingPlan({ plans, scope, categories, onSave }: { plans: FinanceD
     <form className="plan-add-row" onSubmit={submit}>
       <label className="field"><span>Category</span><select value={chosen} onChange={(event) => setCategory(event.target.value)}>{available.map((item) => <option key={item}>{item}</option>)}</select></label>
       <label className="field"><span>Monthly limit</span><input required type="number" min="1" step="1" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="500" /></label>
-      <button className="secondary-button" type="submit"><Plus size={16} /> Add plan</button>
+      <button className="secondary-button" type="submit"><Plus size={16} /> Add category</button>
     </form>
   );
 }
 
-function SpendingPlanRow({ plan, spent, onSave }: { plan: FinanceData["spendingPlans"][number]; spent: number; onSave: (category: string, amount: number, scope: SpaceId) => void }) {
+function SpendingPlanRow({ plan, spent, onSave, onDelete, compact }: { plan: FinanceData["spendingPlans"][number]; spent: number; onSave: (category: string, amount: number, scope: SpaceId) => void; onDelete: (plan: FinanceData["spendingPlans"][number]) => void; compact: boolean }) {
   const [editing, setEditing] = useState(false);
   const [amount, setAmount] = useState(String(plan.monthlyLimit));
   const ratio = plan.monthlyLimit > 0 ? spent / plan.monthlyLimit : 0;
-  return <div className="plan-row"><div className="plan-row-top"><span><i style={{ background: categoryColors[plan.category] || categoryColors.Other }} />{plan.category}<small>{formatMoney(spent)} spent</small></span>{editing ? <span className="inline-plan-edit"><input autoFocus type="number" min="0" value={amount} onChange={(event) => setAmount(event.target.value)} aria-label={`${plan.category} monthly plan`} /><button onClick={() => { onSave(plan.category, Number(amount) || 0, plan.space); setEditing(false); }}><Check size={15} /></button></span> : <button onClick={() => setEditing(true)}>{formatMoney(plan.monthlyLimit)} <Edit3 size={14} /></button>}</div><div className="plan-progress"><i className={ratio > 1 ? "over-plan" : ""} style={{ width: `${Math.min(100, ratio * 100)}%`, background: categoryColors[plan.category] || categoryColors.Other }} /></div><small>{ratio > 1 ? `${formatMoney(spent - plan.monthlyLimit)} over` : `${formatMoney(Math.max(0, plan.monthlyLimit - spent))} left`}</small></div>;
+  return <div className="plan-row"><div className="plan-row-top"><span><i style={{ background: categoryColors[plan.category] || categoryColors.Other }} />{plan.category}<small>{formatMoney(spent)} spent</small></span>{editing ? <span className="inline-plan-edit"><input autoFocus type="number" min="1" value={amount} onChange={(event) => setAmount(event.target.value)} aria-label={`${plan.category} monthly budget`} /><button type="button" onClick={() => { onSave(plan.category, Number(amount) || plan.monthlyLimit, plan.space); setEditing(false); }} aria-label={`Save ${plan.category} budget`}><Check size={15} /></button><button type="button" className="inline-cancel" onClick={() => { setAmount(String(plan.monthlyLimit)); setEditing(false); }} aria-label={`Cancel editing ${plan.category} budget`}><X size={15} /></button></span> : <span className="plan-row-actions"><button type="button" onClick={() => setEditing(true)} aria-label={`Edit ${plan.category} budget`}>{formatMoney(plan.monthlyLimit)} <Edit3 size={14} /></button>{!compact && <button type="button" className="plan-delete" onClick={() => onDelete(plan)} aria-label={`Remove ${plan.category} budget`}><Trash2 size={15} /></button>}</span>}</div><div className="plan-progress"><i className={ratio > 1 ? "over-plan" : ""} style={{ width: `${Math.min(100, ratio * 100)}%`, background: categoryColors[plan.category] || categoryColors.Other }} /></div><small>{ratio > 1 ? `${formatMoney(spent - plan.monthlyLimit)} over budget` : `${formatMoney(Math.max(0, plan.monthlyLimit - spent))} remaining`}</small></div>;
 }
 
 function FutureView({ goals, recurring, events, accounts, forecast, recurringCost, fx, onAddGoal, onAddEvent, onAddRecurring, onToggleRecurring, onPostRecurring, onEditGoal, onEditEvent, onEditRecurring, goalContribution, setGoalContribution, contributionAmount, setContributionAmount, fundGoal, onToggleEvent }: {
@@ -2635,7 +2740,7 @@ function SettingsModal({ profile, hasTogether, currenciesInUse, onClose, onProfi
 
 function HouseholdModal({ profile, members, viewerEmail, inviteUrl, onClose, onSubmit, onManage, notify }: { profile: FinanceData["profile"]; members: Array<{ email: string; display_name: string; role: string; status: string }>; viewerEmail: string; inviteUrl: string | null; onClose: () => void; onSubmit: (profile: FinanceData["profile"], prepareEmail?: boolean) => void; onManage: (action: "revoke" | "leave" | "close", email?: string) => void; notify: (message: string) => void }) {
   const [name, setName] = useState(profile.name);
-  const [householdName, setHouseholdName] = useState(profile.householdName);
+  const [householdName, setHouseholdName] = useState(profile.householdName || `${profile.name.trim().split(/\s+/)[0] || "Our"}’s Together`);
   const [partnerName, setPartnerName] = useState(profile.partnerName || "");
   const [partnerEmail, setPartnerEmail] = useState(profile.partnerEmail || "");
   const [voiceLocale, setVoiceLocale] = useState(profile.voiceLocale || "en-SG");
@@ -2649,7 +2754,10 @@ function HouseholdModal({ profile, members, viewerEmail, inviteUrl, onClose, onS
   function submit(event: FormEvent) {
     event.preventDefault();
     const normalizedEmail = partnerEmail.trim().toLowerCase();
-    if (!name.trim() || !householdName.trim() || !partnerName.trim() || !normalizedEmail) return;
+    if (!name.trim() || !householdName.trim() || !partnerName.trim() || !normalizedEmail) {
+      setError("Add your names, a Together name, and the other person’s sign-in email.");
+      return;
+    }
     if (normalizedEmail === viewerEmail.toLowerCase()) {
       setError("Invite the other person’s sign-in email, not the email you are using now.");
       return;
@@ -2805,7 +2913,7 @@ function RecurringModal({ initial, scope, accounts, categories, onNeedAccount, o
   );
 }
 
-function ImportModal({ data, scope, onNeedAccount, onClose, setData, onStage, notify }: { data: FinanceData; scope: ViewScope; onNeedAccount: () => void; onClose: () => void; setData: React.Dispatch<React.SetStateAction<FinanceData>>; onStage: (transactions: Transaction[]) => void; notify: (message: string) => void }) {
+function ImportModal({ data, scope, onNeedAccount, onManual, onClose, setData, onStage, notify }: { data: FinanceData; scope: ViewScope; onNeedAccount: () => void; onManual: () => void; onClose: () => void; setData: React.Dispatch<React.SetStateAction<FinanceData>>; onStage: (transactions: Transaction[]) => void; notify: (message: string) => void }) {
   const { request } = useLifetimeApi();
   const [text, setText] = useState("");
   const [report, setReport] = useState<ImportReport | null>(null);
@@ -2856,19 +2964,20 @@ function ImportModal({ data, scope, onNeedAccount, onClose, setData, onStage, no
   }
 
   return (
-    <ModalShell eyebrow="Sheets and statements" title="Import transactions" onClose={onClose}>
+    <ModalShell eyebrow="Optional import" title="Add transactions from a file" onClose={onClose}>
       {!data.accounts.length ? <AccountRequired forWhat="A transaction import" onAddAccount={onNeedAccount} /> : <>
-      <div className="import-copy"><span className="import-icon"><FileSpreadsheet size={22} /></span><div><strong>Paste rows from Google Sheets or a CSV</strong><p>Use the columns date, description, amount, type, category, and account. Negative amounts become expenses when type is blank. Rows matching a transaction you already have are skipped.</p></div></div>
+      <div className="import-choice-note"><div><strong>Adding just one expense or income?</strong><p>You do not need a spreadsheet. Use the normal transaction form instead.</p></div><button className="secondary-button" type="button" onClick={onManual}><Plus size={16} /> Add one transaction</button></div>
+      <div className="import-copy"><span className="import-icon"><FileSpreadsheet size={22} /></span><div><strong>Bank CSV or spreadsheet</strong><p>Choose a CSV file or paste rows below. Use the columns date, description, amount, type, category, and account. Matching transactions are skipped automatically.</p></div></div>
       <div className="import-file-row"><label className="secondary-button file-button"><FileSpreadsheet size={16} /> Choose CSV<input className="file-input" type="file" accept=".csv,text/csv" onChange={(event) => { const file = event.target.files?.[0]; if (file) void loadCsvFile(file); event.currentTarget.value = ""; }} /></label><label className="import-account"><span>Default account</span><select value={receiptAccountId} onChange={(event) => setReceiptAccountId(event.target.value)}>{data.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select></label><span>Used only when a row has no account column. Statement rows do not change the current balance you entered.</span></div>
       <textarea className="import-textarea" value={text} onChange={(event) => { setText(event.target.value); setReport(null); }} placeholder={"date,description,amount,type,category,account\n2026-08-14,Coffee,6.50,expense,Food & dining,Everyday"} aria-label="Transaction CSV data" />
-      <div className="receipt-import"><div><strong>Receipt or payment screenshot</strong><small>Choose the account, then scan an image into the review inbox.</small></div><select value={receiptAccountId} onChange={(event) => setReceiptAccountId(event.target.value)} aria-label="Receipt account">{data.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><label className="secondary-button file-button"><Upload size={16} /> {receiptWorking ? "Reading…" : "Scan image"}<input className="file-input" disabled={receiptWorking} type="file" accept="image/jpeg,image/png,image/webp" capture="environment" onChange={(event) => { const file = event.target.files?.[0]; if (file) void scanReceipt(file); event.currentTarget.value = ""; }} /></label></div>
+      <div className="receipt-import"><div><strong>Receipt or payment screenshot</strong><small>We extract the merchant, amount, and date, then let you check everything in Imports before it is added.</small></div><select value={receiptAccountId} onChange={(event) => setReceiptAccountId(event.target.value)} aria-label="Receipt account">{data.accounts.map((account) => <option key={account.id} value={account.id}>{account.name}</option>)}</select><label className="secondary-button file-button"><Upload size={16} /> {receiptWorking ? "Reading…" : "Scan image"}<input className="file-input" disabled={receiptWorking} type="file" accept="image/jpeg,image/png,image/webp" capture="environment" onChange={(event) => { const file = event.target.files?.[0]; if (file) void scanReceipt(file); event.currentTarget.value = ""; }} /></label></div>
       {receiptError && <p className="form-error">{receiptError}</p>}
       <div className="info-note"><ShieldCheck size={17} /><span>Transfers are intentionally skipped here so they can be linked safely between two accounts in the ledger.</span></div>
       {report?.error && <p className="form-error">{report.error}</p>}
       {report && !report.error && (
         <div className="import-report">
           <div className="import-report-counts">
-            <span><strong>{report.accepted.length}</strong> imported</span>
+            <span><strong>{report.accepted.length}</strong> ready</span>
             <span><strong>{report.duplicates}</strong> skipped as duplicate{report.duplicates === 1 ? "" : "s"}</span>
             <span><strong>{report.rejected.length}</strong> rejected</span>
           </div>
@@ -2879,7 +2988,7 @@ function ImportModal({ data, scope, onNeedAccount, onClose, setData, onStage, no
           )}
         </div>
       )}
-      <div className="form-actions"><button className="secondary-button" onClick={onClose}>{report && !report.error ? "Done" : "Cancel"}</button><span className="form-action-spacer" /><button className="secondary-button" onClick={reviewRows}><Layers3 size={16} /> Review first</button><button className="primary-button" onClick={importRows}>Import all</button></div>
+      <div className="form-actions"><button className="secondary-button" onClick={onClose}>{report && !report.error ? "Done" : "Cancel"}</button><span className="form-action-spacer" /><button className="primary-button" onClick={reviewRows}><Layers3 size={16} /> Check before adding</button><button className="secondary-button" onClick={importRows}>Add straight to activity</button></div>
       </>}
     </ModalShell>
   );
