@@ -102,6 +102,10 @@ import {
 } from "@/lib/finance";
 import { ImportReport, describeImport, importTransactions } from "@/lib/import";
 import { prepareAudioForTranscription } from "@/lib/audio";
+import { defaultReminderSettings, planReminders } from "@/lib/reminders";
+import { clearReminders, syncReminders } from "@/lib/native/reminders";
+import { checkBiometry } from "@/lib/native/appLock";
+import AppLock from "@/components/AppLock";
 import { hasTogetherAccess, type TogetherMember } from "@/lib/together";
 import { mergeFinanceWorkspaces } from "@/lib/sync";
 
@@ -428,6 +432,22 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
       history: recordNetWorthPoint(current.history, { date: today, ...totals, currency: baseCurrency }),
     }));
   }, [totals, baseCurrency, syncStatus, data.history, data.accounts.length]);
+
+  const workspaceHorizon = useMemo(
+    () => buildHorizon(data.recurring, data.plannedEvents),
+    [data.recurring, data.plannedEvents],
+  );
+
+  useEffect(() => {
+    if (syncStatus === "loading") return;
+    if (data.profile.remindersEnabled !== true) { void clearReminders(); return; }
+    const plans = planReminders(
+      workspaceHorizon,
+      baseCurrency,
+      { ...defaultReminderSettings, hour: data.profile.reminderHour ?? defaultReminderSettings.hour },
+    );
+    void syncReminders(plans);
+  }, [workspaceHorizon, baseCurrency, data.profile.remindersEnabled, data.profile.reminderHour, syncStatus]);
 
   function notify(message: string) {
     setToast(message);
@@ -884,7 +904,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
   if (!hydrated) return <AppLoading displayName={viewer.displayName} />;
 
   return (
-    <LifetimeApiContext.Provider value={apiContext}><div className="app-shell">
+    <LifetimeApiContext.Provider value={apiContext}><AppLock enabled={data.profile.appLockEnabled === true}><div className="app-shell">
       <aside className={`sidebar ${mobileMenu ? "sidebar-open" : ""}`}>
         <div className="brand-lockup">
           <span className="brand-mark"><Leaf size={20} strokeWidth={2.4} /></span>
@@ -1121,7 +1141,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
       {confirmation && <ConfirmationModal confirmation={confirmation} onClose={() => setConfirmation(null)} onConfirm={() => { const action = confirmation.onConfirm; setConfirmation(null); action(); }} />}
 
       {toast && <div className="toast"><Check size={17} />{toast}</div>}
-    </div></LifetimeApiContext.Provider>
+    </div></AppLock></LifetimeApiContext.Provider>
   );
 }
 
@@ -2449,6 +2469,12 @@ function SettingsModal({ profile, hasTogether, currenciesInUse, onClose, onProfi
   const [baseCurrency, setBaseCurrency] = useState<CurrencyCode>(profile.baseCurrency || DEFAULT_CURRENCY);
   const [rates, setRates] = useState<FxRates>(profile.fxRates || {});
   const [customCategories, setCustomCategories] = useState<string[]>(profile.customCategories || []);
+  const [appLockEnabled, setAppLockEnabled] = useState(profile.appLockEnabled === true);
+  const [remindersEnabled, setRemindersEnabled] = useState(profile.remindersEnabled === true);
+  const [reminderHour, setReminderHour] = useState(profile.reminderHour ?? 9);
+  const [biometry, setBiometry] = useState<{ available: boolean; label: string }>({ available: false, label: "biometrics" });
+
+  useEffect(() => { void checkBiometry().then(setBiometry); }, []);
   const [newCategory, setNewCategory] = useState("");
   const foreignHeld = currenciesInUse.filter((code) => code !== baseCurrency);
   const [historyState, setHistoryState] = useState<"loading" | "ready" | "unavailable" | "error">("loading");
@@ -2474,6 +2500,9 @@ function SettingsModal({ profile, hasTogether, currenciesInUse, onClose, onProfi
       name: name.trim(),
       baseCurrency,
       customCategories,
+      appLockEnabled,
+      remindersEnabled,
+      reminderHour,
       fxRates: rates,
       fxUpdatedAt: changedRates ? todayIso() : profile.fxUpdatedAt,
     });
@@ -2515,6 +2544,38 @@ function SettingsModal({ profile, hasTogether, currenciesInUse, onClose, onProfi
         </div>
         {profile.fxUpdatedAt && <p className="info-note fx-stamp">Rates last set {formatDate(profile.fxUpdatedAt)}. They do not update on their own.</p>}
       </section>}
+      <section className="settings-section settings-stack">
+        <div>
+          <strong>On this device</strong>
+          <small>These are stored with your profile but only do anything inside the iPhone or iPad app.</small>
+        </div>
+        <label className="check-field settings-check">
+          <input type="checkbox" checked={appLockEnabled} disabled={!biometry.available} onChange={(event) => setAppLockEnabled(event.target.checked)} />
+          <span>
+            <strong>Require {biometry.available ? biometry.label : "Face ID"} to open</strong>
+            <small>{biometry.available
+              ? `Lifetime locks when it has been in the background for a minute, so a phone left unlocked does not show your accounts.`
+              : "Available in the iPhone or iPad app, once the device has a biometric or passcode set."}</small>
+          </span>
+        </label>
+        <label className="check-field settings-check">
+          <input type="checkbox" checked={remindersEnabled} onChange={(event) => setRemindersEnabled(event.target.checked)} />
+          <span>
+            <strong>Remind me about bills</strong>
+            <small>A notification the day before and the morning something is due, built from your own recurring payments and planned events. Nothing leaves the device.</small>
+          </span>
+        </label>
+        {remindersEnabled && (
+          <label className="field">
+            <span>Remind me at</span>
+            <select value={reminderHour} onChange={(event) => setReminderHour(Number(event.target.value))}>
+              {Array.from({ length: 24 }, (_, hour) => (
+                <option key={hour} value={hour}>{`${String(hour).padStart(2, "0")}:00`}</option>
+              ))}
+            </select>
+          </label>
+        )}
+      </section>
       <label className="check-field settings-check"><input type="checkbox" checked={profile.voiceAiEnabled === true} onChange={(event) => onProfile({ ...profile, voiceAiEnabled: event.target.checked })} /><span><strong>Reliable voice transcription</strong><small>Off by default. When enabled, only recordings you deliberately make are sent to Qwen after you stop recording.</small></span></label>
       <label className="check-field settings-check"><input type="checkbox" checked={profile.aiEnabled === true} onChange={(event) => onProfile({ ...profile, aiEnabled: event.target.checked })} /><span><strong>Private AI Coach</strong><small>Off by default. When enabled, the financial context you choose to ask about is sent to Qwen for a more natural explanation and smarter capture parsing.</small></span></label>
       <section className="settings-section"><div><strong>Together</strong><small>{hasTogether ? "Manage members and shared access." : "Invite a partner or family member when you are ready."}</small></div><button type="button" className="secondary-button" onClick={onTogether}>{hasTogether ? "Manage" : "Set up"}</button></section>

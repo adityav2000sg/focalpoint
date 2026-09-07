@@ -320,6 +320,16 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
    value and the table twin under the chart keeps every number reachable without hover. */
 /* Direction switch on a recurring item — a salary and a subscription repeat the same way
    but move money in opposite directions, so the choice has to be visible, not inferred. */
+/* Lock screen. The workspace stays mounted behind it so no in-flight save is lost, and is
+   blurred rather than merely covered so nothing legible survives an app-switcher snapshot. */
+.locked-content { filter: blur(18px); pointer-events: none; user-select: none; }
+.app-lock { position: fixed; inset: 0; z-index: 200; display: grid; place-items: center; padding: 24px; background: rgba(9,38,31,.72); backdrop-filter: blur(20px); animation: fade-in var(--motion-modal) var(--motion-ease); }
+.app-lock-card { width: min(360px,100%); display: flex; flex-direction: column; align-items: center; padding: 32px 26px calc(28px + env(safe-area-inset-bottom)); border-radius: 26px; background: var(--paper-solid); box-shadow: 0 30px 90px rgba(4,24,19,.4); text-align: center; animation: modal-in var(--motion-modal) var(--motion-ease-out); }
+.app-lock-mark { width: 56px; height: 56px; display: grid; place-items: center; border-radius: 18px; color: var(--forest); background: linear-gradient(135deg,var(--lime),var(--mint)); }
+.app-lock-card strong { margin-top: 18px; font-family: var(--font-display); font-size: 19px; }
+.app-lock-card p { margin: 8px 0 20px; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.app-lock-card .primary-button { width: 100%; justify-content: center; }
+
 .type-switch { display: flex; gap: 3px; padding: 3px; border-radius: 11px; background: rgba(17,59,50,.07); }
 .type-switch button { flex: 1; min-height: 38px; border: 0; border-radius: 9px; color: #6b7a72; background: transparent; font-size: 12px; font-weight: var(--weight-strong); cursor: pointer; }
 .type-switch .active { color: white; background: var(--forest); }
