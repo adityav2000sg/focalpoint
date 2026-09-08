@@ -54,3 +54,6 @@ deno.lock
 
 # Local Claude Code tooling config
 /.claude
+
+# Scratch screenshots from local verification runs
+/.screens
