@@ -105,6 +105,8 @@ import { prepareAudioForTranscription } from "@/lib/audio";
 import { defaultReminderSettings, planReminders } from "@/lib/reminders";
 import { clearReminders, syncReminders } from "@/lib/native/reminders";
 import { checkBiometry } from "@/lib/native/appLock";
+import AnimatedNumber from "@/components/ui/AnimatedNumber";
+import { CoachGlyph, FutureGlyph, MoneyGlyph, TodayGlyph, TogetherGlyph } from "@/components/ui/icons";
 import AppLock from "@/components/AppLock";
 import OnboardingWizard, { type OnboardingResult } from "@/components/OnboardingWizard";
 import { hasTogetherAccess, type TogetherMember } from "@/lib/together";
@@ -118,10 +120,10 @@ type ActivityFilter = "all" | TransactionType;
 type ActivityPeriod = "month" | "all";
 
 const baseNavItems: { id: ViewId; label: string; icon: React.ElementType }[] = [
-  { id: "today", label: "Today", icon: LayoutDashboard },
-  { id: "money", label: "Money", icon: WalletCards },
-  { id: "future", label: "Future", icon: Target },
-  { id: "coach", label: "Coach", icon: WandSparkles },
+  { id: "today", label: "Today", icon: TodayGlyph },
+  { id: "money", label: "Money", icon: MoneyGlyph },
+  { id: "future", label: "Future", icon: FutureGlyph },
+  { id: "coach", label: "Coach", icon: CoachGlyph },
 ];
 
 const personalScopeOption: { id: ViewScope; label: string; shortLabel: string; icon: React.ElementType } =
@@ -219,7 +221,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
     window.location.assign("/login");
   }, [onSignOut]);
   const hasTogether = hasTogetherAccess(data.profile, householdMembers, viewer.email);
-  const navItems = hasTogether ? [...baseNavItems, { id: "together" as const, label: "Together", icon: Users }] : baseNavItems;
+  const navItems = hasTogether ? [...baseNavItems, { id: "together" as const, label: "Together", icon: TogetherGlyph }] : baseNavItems;
   const scopeOptions = hasTogether ? [personalScopeOption, togetherScopeOption] : [personalScopeOption];
 
   useEffect(() => {
@@ -1521,7 +1523,7 @@ function Overview({
           </div>
           <div className="hero-balance">
             <div className="hero-label-row"><span>{scopeLabel} net worth</span><span className="live-pill"><i /> {accounts.length} account{accounts.length === 1 ? "" : "s"}</span></div>
-            <strong>{formatMoney(netWorth)}</strong>
+            <strong>{<AnimatedNumber value={netWorth} format={(n) => formatMoney(n)} />}</strong>
             <p>{monthCashFlow >= 0 ? <TrendingUp size={16} /> : <ArrowUpRight size={16} />} {monthCashFlow >= 0 ? "+" : "−"}{formatMoney(Math.abs(monthCashFlow))} net cash flow in {selectedMonthLabel}</p>
           </div>
         </div>
@@ -1708,9 +1710,9 @@ function MoneyView({ section, setSection, fx, history, categories, accounts, all
 
       {section === "snapshot" && <>
         <section className="money-snapshot-grid">
-          <div className="money-total-card"><p className="eyebrow">Net worth</p><strong>{formatMoney(netWorth)}</strong><span>Assets {formatMoney(sumAccountsInBase(assets, fx.base, fx.rates).total)} · Liabilities {formatMoney(Math.abs(sumAccountsInBase(liabilities, fx.base, fx.rates).total))}</span></div>
-          <div className="money-mini-card"><span><ArrowDownLeft size={17} /> Income</span><strong>{formatMoney(monthIncome)}</strong><small>{selectedMonthLabel}</small></div>
-          <div className="money-mini-card"><span><ArrowUpRight size={17} /> Spending</span><strong>{formatMoney(monthSpending)}</strong><small>Transfers excluded</small></div>
+          <div className="money-total-card"><p className="eyebrow">Net worth</p><strong>{<AnimatedNumber value={netWorth} format={(n) => formatMoney(n)} />}</strong><span>Assets {formatMoney(sumAccountsInBase(assets, fx.base, fx.rates).total)} · Liabilities {formatMoney(Math.abs(sumAccountsInBase(liabilities, fx.base, fx.rates).total))}</span></div>
+          <div className="money-mini-card"><span><ArrowDownLeft size={17} /> Income</span><strong>{<AnimatedNumber value={monthIncome} format={(n) => formatMoney(n)} />}</strong><small>{selectedMonthLabel}</small></div>
+          <div className="money-mini-card"><span><ArrowUpRight size={17} /> Spending</span><strong>{<AnimatedNumber value={monthSpending} format={(n) => formatMoney(n)} />}</strong><small>Transfers excluded</small></div>
           <button className="money-mini-card actionable-card" onClick={() => setSection("activity")}><span><ArrowLeftRight size={17} /> Transactions</span><strong>{monthTransactions.length}</strong><small>{selectedMonthLabel}</small></button>
         </section>
         <NetWorthPanel history={history} currency={fx.base} />
@@ -2016,7 +2018,7 @@ function AccountsView({ accounts, netWorth, fx, onAdd, onEdit }: { accounts: Acc
         <button className="primary-button" onClick={onAdd}><Plus size={18} /> Add account</button>
       </PageHeading>
       <section className="accounts-hero">
-        <div><p className="eyebrow">Total net worth</p><strong>{formatMoney(netWorth)}</strong><span><WalletCards size={15} /> Across {accounts.length} account{accounts.length === 1 ? "" : "s"}</span></div>
+        <div><p className="eyebrow">Total net worth</p><strong>{<AnimatedNumber value={netWorth} format={(n) => formatMoney(n)} />}</strong><span><WalletCards size={15} /> Across {accounts.length} account{accounts.length === 1 ? "" : "s"}</span></div>
         <div className="balance-breakdown">
           <div><span>Cash & savings</span><strong>{formatMoney(liquid)}</strong></div>
           <div><span>Investments</span><strong>{formatMoney(investments)}</strong></div>
@@ -2152,7 +2154,10 @@ function AccountCard({ account, fx, onEdit }: { account: Account; fx: FxContext;
       <p>{account.institution}</p>
       <h3>{account.name}</h3>
       <strong>{formatAccountBalance(account.balance, account.currency, fx.base)}</strong>
-      <div><span>{accountTypeLabels[account.type]}{account.last4 ? ` · •${account.last4}` : ""}</span><span>{account.space === "household" ? <Users size={14} /> : <UserRound size={14} />}{account.space === "household" ? "Shared" : account.owner}</span></div>
+      {account.last4
+        ? <span className="account-card-number"><i /> •••• {account.last4}</span>
+        : <span className="account-card-number-empty" aria-hidden />}
+      <div><span>{accountTypeLabels[account.type]}</span><span>{account.space === "household" ? <Users size={14} /> : <UserRound size={14} />}{account.space === "household" ? "Shared" : account.owner}</span></div>
     </button>
   );
 }
