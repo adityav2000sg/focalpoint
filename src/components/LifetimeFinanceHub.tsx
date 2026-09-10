@@ -1,6 +1,6 @@
 "use client";
 
-import React, { FormEvent, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
   AlertTriangle,
   ArrowDownLeft,
@@ -106,6 +106,7 @@ import { defaultReminderSettings, planReminders } from "@/lib/reminders";
 import { clearReminders, syncReminders } from "@/lib/native/reminders";
 import { checkBiometry } from "@/lib/native/appLock";
 import AnimatedNumber from "@/components/ui/AnimatedNumber";
+import PullToRefresh from "@/components/ui/PullToRefresh";
 import { CoachGlyph, FutureGlyph, MoneyGlyph, TodayGlyph, TogetherGlyph } from "@/components/ui/icons";
 import AppLock from "@/components/AppLock";
 import OnboardingWizard, { type OnboardingResult } from "@/components/OnboardingWizard";
@@ -489,6 +490,26 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
     );
     void syncReminders(plans);
   }, [workspaceHorizon, baseCurrency, data.profile.remindersEnabled, data.profile.reminderHour, syncStatus]);
+
+  const refreshWorkspace = useCallback(async () => {
+    try {
+      const response = await apiRequest("/api/finance", { cache: "no-store" });
+      if (!response.ok) return;
+      const payload = await response.json() as { data?: Partial<FinanceData> | null; members?: TogetherMember[]; revisions?: WorkspaceRevisions; inviteUrl?: string | null };
+      if (!payload.data) return;
+      const remote = normalizeFinanceData(payload.data, createViewerSeed(viewer));
+      const merged = mergeFinanceWorkspaces(lastSyncedData.current || remote, latestData.current || remote, remote);
+      setData(merged);
+      latestData.current = merged;
+      lastSyncedData.current = remote;
+      setHouseholdMembers(payload.members || []);
+      if (payload.revisions) { setRevisions(payload.revisions); latestRevisions.current = payload.revisions; }
+      setInviteUrl(payload.inviteUrl || null);
+      setSyncStatus("saved");
+    } catch {
+      // Offline: the local workspace is already the source of truth, so there is nothing to say.
+    }
+  }, [apiRequest, viewer]);
 
   function notify(message: string) {
     setToast(message);
@@ -980,6 +1001,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
 
   return (
     <LifetimeApiContext.Provider value={apiContext}><AppLock enabled={data.profile.appLockEnabled === true}>
+      <PullToRefresh onRefresh={refreshWorkspace} />
       {showWizard && (
         <OnboardingWizard
           displayName={data.profile.name}
@@ -1568,7 +1590,7 @@ function Overview({
         <section className="panel accounts-panel">
           <PanelHeading eyebrow="Accounts" title="Where your money lives" action="See all" onAction={() => onView("money", "accounts")} />
           <div className="account-list">
-            {accounts.length ? accounts.slice(0, 4).map((account) => <AccountRow key={account.id} account={account} fx={fx} />) : <EmptyState icon={<WalletCards />} title="Add your first account" copy="Start with a bank, card, cash, or investment account." />}
+            {accounts.length ? accounts.slice(0, 4).map((account, index) => <AccountRow key={account.id} account={account} fx={fx} index={index} />) : <EmptyState icon={<WalletCards />} title="Add your first account" copy="Start with a bank, card, cash, or investment account." />}
           </div>
         </section>
 
@@ -1593,7 +1615,7 @@ function Overview({
         <section className="panel activity-panel">
           <PanelHeading eyebrow="Activity" title="Recent transactions" action="See all" onAction={() => onView("money", "activity")} />
           <div className="transaction-list compact-list">
-            {transactions.length ? transactions.slice(0, 6).map((transaction) => <TransactionRow key={transaction.id} transaction={transaction} accounts={data.accounts} />) : <EmptyState icon={<ArrowLeftRight />} title="No activity yet" copy="Transactions you add or import will appear here." />}
+            {transactions.length ? transactions.slice(0, 6).map((transaction, index) => <TransactionRow key={transaction.id} transaction={transaction} accounts={data.accounts} index={index} />) : <EmptyState icon={<ArrowLeftRight />} title="No activity yet" copy="Transactions you add or import will appear here." />}
           </div>
         </section>
 
@@ -1720,7 +1742,7 @@ function MoneyView({ section, setSection, fx, history, categories, accounts, all
           <section className="panel accounts-panel">
             <PanelHeading eyebrow="Balance sheet" title="Assets and liabilities" action="Manage" onAction={() => setSection("accounts")} />
             <div className="account-list">
-              {accounts.slice(0, 7).map((account) => <button className="account-edit-row" key={account.id} onClick={() => onEditAccount(account)}><AccountRow account={account} fx={fx} /></button>)}
+              {accounts.slice(0, 7).map((account, index) => <button className="account-edit-row" key={account.id} onClick={() => onEditAccount(account)}><AccountRow account={account} fx={fx} index={index} /></button>)}
               {!accounts.length && <EmptyState icon={<WalletCards />} title="Build your balance sheet" copy="Add cash, cards, CPF, investments, property, insurance values and loans." />}
             </div>
           </section>
@@ -1894,7 +1916,7 @@ function TogetherView({ data, accounts, fx, members, viewerEmail, onSetup, onEdi
   return <div className="page-stack"><PageHeading eyebrow="Private by default, shared on purpose" title={data.profile.householdName || "Together"} copy="Together combines your private records with records deliberately shared between members. The other person never receives your Personal records."><button className="primary-button" onClick={onSetup}><Settings2 size={17} /> Manage Together</button></PageHeading>
     <section className="household-hero"><div className="household-orbits"><span className="avatar">{data.profile.name.slice(0, 1)}</span><span className="avatar partner-avatar">{data.profile.partnerName?.slice(0, 1) || "P"}</span></div><div><p className="eyebrow hero-eyebrow">Together, with boundaries</p><h2>{formatMoney(sumAccountsInBase(sharedAccounts, fx.base, fx.rates).total)} shared net worth</h2><p>{sharedAccounts.length} shared accounts · {personalAccounts.length} personal accounts stay private in each member’s Personal view.</p></div></section>
     <div className="dashboard-grid"><section className="panel members-panel"><PanelHeading eyebrow="People and access" title="Together members" action="Manage" onAction={onSetup} /><div className="member-list">{visibleMembers.map((member) => <div key={member.email}><span className="avatar">{(member.display_name || member.email).slice(0, 1).toUpperCase()}</span><span><strong>{member.display_name || member.email}</strong><small>{member.email}</small></span><span className={member.status === "active" ? "member-status active-member" : "member-status"}>{member.status === "active" ? "Active" : "Invite pending"}</span><small>{member.role}</small></div>)}</div><div className="info-note"><ShieldCheck size={17} /><span>An invitation activates only for the same verified Google or Apple email. Database access rules keep every Personal space owner-only.</span></div></section><section className="panel access-panel"><PanelHeading eyebrow="Visibility" title="What the other person can see" /><div className="privacy-map"><div><span>Personal</span><strong>{personalAccounts.length} accounts</strong><small>Only you can read these records.</small></div><div><span>Shared in Together</span><strong>{sharedAccounts.length} accounts</strong><small>Visible to active Together members.</small></div></div><p className="privacy-caption">Your Together dashboard currently combines {accounts.length} accounts visible to you, without counting transfers as income or spending.</p></section></div>
-    <section className="panel household-accounts"><PanelHeading eyebrow="Shared balance sheet" title="Accounts shared in Together" /><div className="account-card-grid">{sharedAccounts.map((account) => <AccountCard key={account.id} account={account} fx={fx} onEdit={() => onEditAccount(account)} />)}{!sharedAccounts.length && <EmptyState icon={<Users />} title="Nothing shared yet" copy="Edit an account and set its visibility to Shared in Together." />}</div></section>
+    <section className="panel household-accounts"><PanelHeading eyebrow="Shared balance sheet" title="Accounts shared in Together" /><div className="account-card-grid">{sharedAccounts.map((account, index) => <AccountCard key={account.id} account={account} fx={fx} index={index} onEdit={() => onEditAccount(account)} />)}{!sharedAccounts.length && <EmptyState icon={<Users />} title="Nothing shared yet" copy="Edit an account and set its visibility to Shared in Together." />}</div></section>
   </div>;
 }
 
@@ -1965,8 +1987,8 @@ function ActivityView({ transactions, accounts, fx, search, setSearch, onAdd, on
           {Object.entries(grouped).length ? Object.entries(grouped).map(([date, items]) => (
             <div className="transaction-day" key={date}>
               <div className="day-heading"><span>{formatDate(date)}</span><small>{items.length} item{items.length === 1 ? "" : "s"}</small></div>
-              {items.map((transaction) => (
-                <TransactionRow key={transaction.id} transaction={transaction} accounts={accounts} showSpace onEdit={() => onEdit(transaction)} onDelete={() => onDelete(transaction)} />
+              {items.map((transaction, index) => (
+                <TransactionRow key={transaction.id} transaction={transaction} accounts={accounts} showSpace index={index} onEdit={() => onEdit(transaction)} onDelete={() => onDelete(transaction)} />
               ))}
             </div>
           )) : <EmptyState icon={<Search />} title="Nothing matched" copy="Try another month or filter, or add a transaction." />}
@@ -2026,7 +2048,7 @@ function AccountsView({ accounts, netWorth, fx, onAdd, onEdit }: { accounts: Acc
         </div>
       </section>
       <section className="account-card-grid">
-        {accounts.map((account) => <AccountCard key={account.id} account={account} fx={fx} onEdit={() => onEdit(account)} />)}
+        {accounts.map((account, index) => <AccountCard key={account.id} account={account} fx={fx} index={index} onEdit={() => onEdit(account)} />)}
         <button className="add-account-card" onClick={onAdd}><span><Plus size={22} /></span><strong>Add another account</strong><small>Bank, card, cash, or investment</small></button>
       </section>
     </div>
@@ -2134,10 +2156,10 @@ function accountIcon(type: AccountType) {
   return Landmark;
 }
 
-function AccountRow({ account, fx }: { account: Account; fx: FxContext }) {
+function AccountRow({ account, fx, index = 0 }: { account: Account; fx: FxContext; index?: number }) {
   const Icon = accountIcon(account.type);
   return (
-    <div className="account-row">
+    <div className="account-row row-enter" style={{ "--i": Math.min(index, 12) } as React.CSSProperties}>
       <span className={`account-icon accent-${account.accent}`}><Icon size={18} /></span>
       <span className="account-name"><strong>{account.name}</strong><small>{account.institution}{account.last4 ? ` · •${account.last4}` : ` · ${accountTypeLabels[account.type]}`}</small></span>
       <span className="account-scope">{account.space === "household" ? <Users size={13} /> : <UserRound size={13} />}{account.space === "household" ? "Shared" : "Personal"}</span>
@@ -2146,10 +2168,10 @@ function AccountRow({ account, fx }: { account: Account; fx: FxContext }) {
   );
 }
 
-function AccountCard({ account, fx, onEdit }: { account: Account; fx: FxContext; onEdit: () => void }) {
+function AccountCard({ account, fx, index = 0, onEdit }: { account: Account; fx: FxContext; index?: number; onEdit: () => void }) {
   const Icon = accountIcon(account.type);
   return (
-    <button className={`account-card account-card-${account.accent}`} onClick={onEdit} aria-label={`Edit ${account.name}`}>
+    <button className={`account-card row-enter account-card-${account.accent}`} style={{ "--i": Math.min(index, 12) } as React.CSSProperties} onClick={onEdit} aria-label={`Edit ${account.name}`}>
       <div className="account-card-top"><span><Icon size={20} /></span><span className="edit-account-pill"><Edit3 size={15} /> Edit</span></div>
       <p>{account.institution}</p>
       <h3>{account.name}</h3>
@@ -2162,12 +2184,12 @@ function AccountCard({ account, fx, onEdit }: { account: Account; fx: FxContext;
   );
 }
 
-function TransactionRow({ transaction, accounts, showSpace = false, onDelete, onEdit }: { transaction: Transaction; accounts: Account[]; showSpace?: boolean; onDelete?: () => void; onEdit?: () => void }) {
+function TransactionRow({ transaction, accounts, index = 0, showSpace = false, onDelete, onEdit }: { transaction: Transaction; accounts: Account[]; index?: number; showSpace?: boolean; onDelete?: () => void; onEdit?: () => void }) {
   const source = accounts.find((account) => account.id === transaction.accountId);
   const destination = accounts.find((account) => account.id === transaction.transferAccountId);
   const Icon = transaction.type === "income" ? ArrowDownLeft : transaction.type === "transfer" ? ArrowLeftRight : ArrowUpRight;
   return (
-    <div className={`transaction-row ${onEdit ? "editable-row" : ""}`} onClick={onEdit} onKeyDown={(event) => { if (onEdit && (event.key === "Enter" || event.key === " ")) onEdit(); }} role={onEdit ? "button" : undefined} tabIndex={onEdit ? 0 : undefined}>
+    <div className={`transaction-row row-enter ${onEdit ? "editable-row" : ""}`} style={{ "--i": Math.min(index, 12) } as React.CSSProperties} onClick={onEdit} onKeyDown={(event) => { if (onEdit && (event.key === "Enter" || event.key === " ")) onEdit(); }} role={onEdit ? "button" : undefined} tabIndex={onEdit ? 0 : undefined}>
       <span className={`transaction-icon transaction-${transaction.type}`}><Icon size={18} /></span>
       <span className="transaction-name">
         <strong>{transaction.description}</strong>

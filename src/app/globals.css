@@ -94,6 +94,13 @@
   --motion-view: 280ms;
   --motion-ease: cubic-bezier(.22,.61,.36,1);
   --motion-ease-out: cubic-bezier(.16,1,.3,1);
+  /* Real damped springs, sampled from the physics rather than approximated with a cubic
+     bezier — a bezier cannot overshoot and return, which is the whole character of a spring.
+     Sheet is looser and arrives with weight; row is firmer and settles almost immediately. */
+  --spring-sheet: linear(0.0, 0.0494, 0.1676, 0.3184, 0.4758, 0.623, 0.7503, 0.8533, 0.9317, 0.9873, 1.0234, 1.0441, 1.053, 1.0538, 1.0494, 1.042, 1.0336, 1.0252, 1.0176, 1.0112, 1.0061, 1.0024, 0.9998, 0.9982, 0.9973, 0.9971, 1);
+  --spring-row: linear(0.0, 0.052, 0.1707, 0.3156, 0.4613, 0.5937, 0.7061, 0.7967, 0.8665, 0.9181, 0.9547, 0.9794, 0.9952, 1.0044, 1.0092, 1.0109, 1.0109, 1.0098, 1.0083, 1.0067, 1.0051, 1.0038, 1.0027, 1.0018, 1.0011, 1.0007, 1);
+  --motion-spring: 520ms;
+  --motion-spring-row: 420ms;
 }
 
 /* Dark is a chosen palette, not an inversion: each step is picked against the dark ground
@@ -441,6 +448,26 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
    value and the table twin under the chart keeps every number reachable without hover. */
 /* Direction switch on a recurring item — a salary and a subscription repeat the same way
    but move money in opposite directions, so the choice has to be visible, not inferred. */
+/* Pull to refresh. The indicator is translated by the pull distance rather than animated,
+   so it tracks the finger exactly; the spring only takes over on release, when the inline
+   distance stops changing and the transition has something to travel to. */
+.pull-refresh { position: fixed; z-index: 60; left: 0; right: 0; top: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; gap: 5px; height: var(--pull); padding-bottom: 6px; pointer-events: none; overflow: hidden; }
+.pull-refresh small { color: var(--muted); font-size: var(--text-2xs); font-weight: var(--weight-medium); opacity: calc(var(--progress) * 1.4); }
+.pull-refresh-mark { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 50%; color: var(--forest); background: var(--bar); box-shadow: var(--elev-2); transform: scale(calc(0.6 + var(--progress) * 0.4)) rotate(calc(var(--progress) * 220deg)); }
+.pull-refresh.is-refreshing { transition: height var(--motion-spring) var(--spring-sheet); }
+.pull-refresh.is-refreshing .pull-refresh-mark { transform: scale(1); animation: pull-spin 720ms linear infinite; }
+@keyframes pull-spin { to { transform: scale(1) rotate(360deg); } }
+
+/* The page must not also rubber-band, or the gesture fights the browser's own overscroll. */
+@media (pointer: coarse) { body { overscroll-behavior-y: contain; } }
+
+/* Rows arrive in sequence rather than appearing all at once. The delay is capped in the
+   component at twelve, so a long ledger finishes its entrance in about a third of a second
+   instead of crawling down the page. The animation runs on mount only — React keeps rows
+   mounted across re-renders, so a filter change animates just the rows that are new. */
+@keyframes row-in { from { opacity: 0; transform: translate3d(0, 12px, 0); } }
+.row-enter { animation: row-in var(--motion-spring-row) var(--spring-row) both; animation-delay: calc(var(--i, 0) * 26ms); }
+
 /* Equal-width digits while a figure is counting, so it does not jitter as digits change,
    released the moment it settles. */
 .counting { font-variant-numeric: tabular-nums; font-feature-settings: "tnum" 1; }
@@ -780,8 +807,8 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .view-stage { min-width: 0; min-height: calc(100svh - 170px); }
 .view-stage > .page-stack { animation-duration: var(--motion-view); animation-timing-function: var(--motion-ease); }
 .modal-backdrop { animation-duration: var(--motion-modal); animation-timing-function: var(--motion-ease); }
-.modal-sheet { animation-duration: var(--motion-modal); animation-timing-function: var(--motion-ease); }
-.toast { animation-duration: var(--motion-modal); animation-timing-function: var(--motion-ease); }
+.modal-sheet { animation-duration: var(--motion-spring); animation-timing-function: var(--spring-sheet); }
+.toast { animation-duration: var(--motion-spring-row); animation-timing-function: var(--spring-row); }
 
 .mobile-menu-scrim { display: none; }
 .goal-card-tools, .item-actions { display: inline-flex; align-items: center; gap: 7px; }
@@ -821,8 +848,8 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 @keyframes app-enter { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes app-fade { from { opacity: 0; } to { opacity: 1; } }
 @keyframes fade-in { from { opacity: 0; } }
-@keyframes modal-in { from { opacity: 0; transform: translateY(12px) scale(.98); } }
-@keyframes toast-in { from { opacity: 0; transform: translate(-50%,10px); } }
+@keyframes modal-in { from { opacity: 0; transform: translateY(14px) scale(.965); } }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%,18px); } }
 @keyframes view-rise { from { opacity: 0; transform: translateY(8px); } }
 
 @media (max-width: 1120px) {
@@ -927,7 +954,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .auth-page { min-height: 100svh; padding: 14px; }.auth-card { padding: 30px 22px; border-radius: 25px; }.auth-brand { margin-bottom: 34px; }.auth-card h1 { font-size: clamp(32px,10vw,42px); line-height: 1.02; }.auth-copy { font-size: var(--text-base); }.auth-promises span { font-size: var(--text-sm); }.google-button { min-height: 56px; }
   .first-run-guide { padding: 19px; border-radius: 21px; }.first-run-heading { align-items: flex-start; flex-direction: column; gap: 10px; }.first-run-heading h2 { font-size: var(--text-xl); }.first-run-steps > button { min-height: 158px; }.first-run-steps > button > p { font-size: var(--text-sm); }
   .toast { bottom: calc(91px + env(safe-area-inset-bottom)); width: calc(100% - 36px); justify-content: center; }
-  @keyframes sheet-in { from { opacity: 0; transform: translateY(30px); } }
+  @keyframes sheet-in { from { opacity: 0; transform: translateY(46px); } }
 }
 
 @media (max-width: 420px) {
