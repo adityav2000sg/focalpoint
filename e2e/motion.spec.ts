@@ -141,10 +141,11 @@ test("surfaces on the dark hero stay dark in both themes", async ({ page }) => {
 
   // A panel sitting on the dark hero card must never be painted with a light paper token.
   // Three separate regressions have put a pale slab on that card; this is the guard.
+  const onDark = [".hero-balance"];
   for (const scheme of ["light", "dark"] as const) {
     await page.emulateMedia({ colorScheme: scheme });
     await page.waitForTimeout(250);
-    const luminance = await page.locator(".hero-balance").evaluate((node) => {
+    const luminance = await page.locator(onDark[0]).evaluate((node) => {
       const rgb = getComputedStyle(node).backgroundColor.match(/[\d.]+/g)!.map(Number);
       const [r, g, b, a = 1] = rgb;
       // Composite over the dark card behind it before judging.
@@ -154,4 +155,34 @@ test("surfaces on the dark hero stay dark in both themes", async ({ page }) => {
     });
     expect(luminance, `${scheme} hero panel should stay dark`).toBeLessThan(110);
   }
+});
+
+test("every panel on a dark card stays dark, on every screen", async ({ page, isMobile }) => {
+  await mock(page);
+  await page.goto("/preview");
+  const nav = isMobile ? ".mobile-nav button" : ".main-nav button";
+
+  // A paper token on a brand card has regressed four times now, on four different panels.
+  // Walk the screens that have one and check each in both themes.
+  const screens: Array<{ view: string; panel: string }> = [
+    { view: "Today", panel: ".hero-balance" },
+    { view: "Future", panel: ".future-stat" },
+  ];
+
+  for (const { view, panel } of screens) {
+    await page.locator(nav).filter({ hasText: new RegExp(`^${view}$`) }).click();
+    await page.waitForTimeout(600);
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.waitForTimeout(250);
+      const luminance = await page.locator(panel).first().evaluate((node) => {
+        const [r, g, b, a = 1] = getComputedStyle(node).backgroundColor.match(/[\d.]+/g)!.map(Number);
+        const card = 24;
+        const mix = (c: number) => c * a + card * (1 - a);
+        return 0.2126 * mix(r) + 0.7152 * mix(g) + 0.0722 * mix(b);
+      });
+      expect(luminance, `${view} ${panel} in ${scheme}`).toBeLessThan(110);
+    }
+  }
+  await page.emulateMedia({ colorScheme: "light" });
 });
