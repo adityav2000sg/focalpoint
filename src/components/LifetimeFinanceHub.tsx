@@ -2,6 +2,7 @@
 
 import React, { useCallback, FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import {
+  SlidersHorizontal,
   AlertTriangle,
   ArrowDownLeft,
   ArrowLeftRight,
@@ -1722,9 +1723,17 @@ function MoneyView({ section, setSection, fx, history, categories, accounts, all
 
   return (
     <div className="page-stack">
-      <PageHeading eyebrow="The full picture" title="Money" copy="Balances, transactions, spending decisions and incoming data—one trusted ledger.">
-        <button className="secondary-button" onClick={onImport}><Upload size={17} /> Import</button>
-        <button className="primary-button" onClick={onAdd}><Plus size={17} /> Transaction</button>
+      <PageHeading eyebrow="The full picture" title="Money">
+        {section === "accounts" ? (
+          <button className="primary-button" onClick={onAddAccount}><Plus size={18} /> Add account</button>
+        ) : section === "inbox" ? (
+          <button className="primary-button" onClick={onImport}><Upload size={17} /> Import</button>
+        ) : (
+          <>
+            <button className="secondary-button" onClick={onImport}><Upload size={17} /> Import</button>
+            <button className="primary-button" onClick={onAdd}><Plus size={17} /> Add transaction</button>
+          </>
+        )}
       </PageHeading>
       <div className="section-tabs money-tabs" role="tablist" aria-label="Money sections">
         {tabs.map(({ id, label, icon: Icon, count }) => <button key={id} className={section === id ? "section-tab section-tab-active" : "section-tab"} onClick={() => setSection(id)} role="tab" aria-selected={section === id}><Icon size={17} />{label}{Boolean(count) && <span>{count}</span>}</button>)}
@@ -1765,9 +1774,6 @@ function MoneyView({ section, setSection, fx, history, categories, accounts, all
 function InboxView({ inbox, accounts, onImport, onApprove, onDismiss, onEdit }: { inbox: InboxItem[]; accounts: Account[]; onImport: () => void; onApprove: (item: InboxItem) => void; onDismiss: (item: InboxItem) => void; onEdit: (item: InboxItem) => void }) {
   return (
     <div className="page-stack">
-      <PageHeading eyebrow="Optional imports" title="Imported transactions" copy="Check spreadsheet rows and scanned receipts here before adding them to your activity.">
-        <button className="primary-button" onClick={onImport}><Upload size={17} /> Import transactions</button>
-      </PageHeading>
       <section className="panel inbox-panel">
         <div className="inbox-intro"><span className="inbox-source"><ShieldCheck size={20} /></span><div><strong>{inbox.length ? `${inbox.length} imported item${inbox.length === 1 ? "" : "s"} to check` : "No imports waiting"}</strong><p>Imports can contain the wrong date, category, or account. Nothing here becomes real activity until you choose Add to activity. Removing an item never changes your finances.</p></div></div>
         <div className="inbox-list">
@@ -1861,7 +1867,7 @@ function FutureView({ goals, recurring, events, accounts, forecast, recurringCos
 }) {
   const plannedTotal = events.filter((item) => item.includeInPlan).reduce((sum, item) => sum + item.amount, 0);
   const hasForecastEvidence = forecast.historyMonths > 0;
-  return <div className="page-stack"><PageHeading eyebrow="From today to someday" title="Future" copy="Goals, life plans and scenarios share one model, so every choice reveals its trade-off."><button className="secondary-button" onClick={onAddEvent}><CalendarDays size={17} /> Plan an event</button><button className="primary-button" onClick={onAddGoal}><Target size={17} /> New goal</button></PageHeading>
+  return <div className="page-stack"><PageHeading eyebrow="From today to someday" title="Future"><button className="secondary-button" onClick={onAddRecurring}><Repeat2 size={17} /> Add recurring</button><button className="secondary-button" onClick={onAddEvent}><CalendarDays size={17} /> Plan an event</button><button className="primary-button" onClick={onAddGoal}><Target size={17} /> New goal</button></PageHeading>
     <section className="future-hero"><div><p className="eyebrow hero-eyebrow">Forecast runway</p><h2>{hasForecastEvidence ? `${formatMoney(Math.abs(forecast.monthlySurplus))} monthly ${forecast.monthlySurplus < 0 ? "deficit" : "surplus"}` : "Waiting for real activity"}</h2><p>{hasForecastEvidence ? `Based on ${forecast.historyMonths} month${forecast.historyMonths === 1 ? "" : "s"} of activity · ${forecast.confidence} confidence` : "Add an account and transactions before relying on a forecast."}</p></div><div className="future-stat"><span>Safe to spend</span><strong>{hasForecastEvidence ? formatMoney(forecast.safeToSpend) : "Not available"}</strong><small>{hasForecastEvidence ? "after goal contributions" : "needs income and spending"}</small></div><div className="future-stat"><span>Emergency cover</span><strong>{hasForecastEvidence ? formatCoverMonths(forecast.emergencyMonths) : "Not available"}</strong><small>{hasForecastEvidence ? `${formatMoney(forecast.liquidBalance)} liquid` : "needs a liquid balance"}</small></div></section>
     <section className="goal-runway-grid">{goals.map((goal) => { const model = forecast.goalForecasts.find((item) => item.goalId === goal.id); return <button className="runway-card" key={goal.id} onClick={() => onEditGoal(goal)}><div className="runway-top"><span className={`goal-symbol goal-${goal.icon}`}><Target size={18} /></span><span className={model?.onTrack ? "status-on-track" : "status-watch"}>{model?.onTrack ? "On track" : "Needs attention"}</span></div><h3>{goal.name}</h3><strong>{model?.estimatedDate ? new Date(`${model.estimatedDate}T12:00:00`).toLocaleDateString("en-SG", { month: "long", year: "numeric" }) : "No forecast yet"}</strong><p>{model?.plannedEventDelayMonths ? `Planned events add about ${model.plannedEventDelayMonths} months.` : "No planned event delay modelled."}</p><div className="goal-progress"><i style={{ width: `${Math.min(100, (goal.current / goal.target) * 100)}%` }} /></div><small>{formatAccountBalance(goal.current, goal.currency || fx.base, fx.base)} of {formatAccountBalance(goal.target, goal.currency || fx.base, fx.base)} · tap to edit</small></button>; })}{!goals.length && <EmptyState icon={<Target />} title="Give the future a number" copy="Create a goal and Lifetime will estimate when you can reach it." />}</section>
     <div className="dashboard-grid"><section className="panel scenario-panel"><PanelHeading eyebrow="Scenario lab" title="What your plans change" action="Add event" onAction={onAddEvent} /><div className="scenario-summary"><span>Included life plans</span><strong>{formatMoney(plannedTotal)}</strong><small>Turn an event off to compare the forecast without it.</small></div><div className="event-list">{events.map((event) => <div className={event.includeInPlan ? "event-row" : "event-row event-muted"} key={event.id}><span className="event-date"><strong>{new Date(`${event.date}T12:00:00`).toLocaleDateString("en-SG", { month: "short" })}</strong><small>{new Date(`${event.date}T12:00:00`).getFullYear()}</small></span><button className="event-copy" onClick={() => onEditEvent(event)}><strong>{event.name}</strong><small>{event.kind} · tap to edit</small></button><strong>{formatAccountBalance(event.amount, event.currency || fx.base, fx.base)}</strong><button className={event.includeInPlan ? "tiny-toggle tiny-toggle-on" : "tiny-toggle"} onClick={() => onToggleEvent(event.id)} aria-label={`${event.includeInPlan ? "Exclude" : "Include"} ${event.name} in forecast`}><i /></button></div>)}{!events.length && <EmptyState icon={<CalendarDays />} title="No life plans yet" copy="Add a trip, move, car, education, or family event to model the trade-off." />}</div></section><section className="panel forecast-explain"><span className="coach-glance-icon"><WandSparkles size={21} /></span><p className="eyebrow">Scenario signal</p><h3>{plannedTotal ? `${formatMoney(plannedTotal)} of plans are competing with your goals.` : "No planned events are competing with your goals."}</h3><p>{forecast.goalForecasts.some((item) => item.plannedEventDelayMonths > 0) ? `The largest modelled delay is ${Math.max(...forecast.goalForecasts.map((item) => item.plannedEventDelayMonths))} months. Lifetime recalculates this when spending or contributions change.` : "Your forecast currently has no event-driven delays."}</p><small>Forecasts are estimates, not guarantees. Evidence: transaction averages, current balances, goal contributions and included events.</small></section></div>
@@ -1903,7 +1909,7 @@ function CoachView({ data, scope, forecast, categoryTotals, qwenConfigured, onCa
     }
     setMessages((current) => [...current, { role: "coach", text: answer }]); setThinking(false);
   }
-  return <div className="page-stack"><PageHeading eyebrow="Evidence, explained" title="Coach" copy="A financial co-pilot that reasons from your numbers, shows assumptions and never moves money for you."><button className="primary-button" onClick={onCapture}><Mic size={17} /> Ask by voice</button></PageHeading>
+  return <div className="page-stack"><PageHeading eyebrow="Evidence, explained" title="Coach"><button className="primary-button" onClick={onCapture}><Mic size={17} /> Ask by voice</button></PageHeading>
     <section className="coach-brief"><div className="coach-avatar"><WandSparkles size={24} /></div><div><p className="eyebrow">Your brief today</p><h2>{!hasEvidence ? "Not enough data to assess your foundation yet." : forecast.goalForecasts.some((item) => !item.onTrack) ? "One plan deserves a closer look." : "Your current numbers look stable."}</h2><p>{!hasEvidence ? "Add an account and at least one real transaction. Until then, Lifetime will not invent a verdict from zeroes." : `${forecast.emergencyMonths >= 6 ? "Your liquid buffer is above six months of modelled spending." : `Your liquid buffer covers ${formatCoverMonths(forecast.emergencyMonths)} of modelled spending.`} ${forecast.safeToSpend > 0 ? `${formatMoney(forecast.safeToSpend)} remains flexible after goal contributions.` : "There is no unallocated surplus in the current model."}`}</p><span>{hasEvidence ? `Confidence: ${forecast.confidence} · ${forecast.historyMonths} months of ledger evidence` : "Confidence: unavailable · waiting for real ledger evidence"}</span></div></section>
     <div className="coach-layout"><section className="panel coach-chat"><div className="coach-thread" ref={scrollRef}>{!messages.length && <div className="coach-starters"><p>Try asking</p>{["Can I afford my planned trip?", "How strong is my emergency fund?", "What is slowing down my goals?"].map((item) => <button key={item} onClick={() => ask(item)}>{item}<ChevronRight size={15} /></button>)}</div>}{messages.map((message, index) => <div key={`${message.role}-${index}`} className={`coach-message coach-message-${message.role}`}>{message.role === "coach" && <span><WandSparkles size={15} /></span>}<p>{message.text}</p></div>)}{thinking && <div className="coach-thinking"><i /><i /><i /></div>}</div><form className="coach-composer" onSubmit={(event) => { event.preventDefault(); ask(); }}><button type="button" onClick={onCapture} aria-label="Ask by voice"><Mic size={19} /></button><input value={prompt} onChange={(event) => setPrompt(event.target.value)} placeholder="Ask about a goal, trade-off, or pattern…" /><button id="coach-submit" className="primary-button" type="submit">Ask</button></form></section><aside className="coach-evidence"><div className="evidence-card"><span><Gauge size={18} /> Monthly model</span><strong>{hasEvidence ? `${formatMoney(forecast.averageIncome)} in` : "Waiting for data"}</strong><p>{hasEvidence ? `${formatMoney(forecast.averageSpending)} average spending` : "No income or spending assessed"}</p></div><div className="evidence-card"><span><ShieldCheck size={18} /> Resilience</span><strong>{hasEvidence ? `${formatCoverMonths(forecast.emergencyMonths)}` : "Not assessed"}</strong><p>{hasEvidence ? `${formatMoney(forecast.liquidBalance)} liquid` : "Add balances and activity"}</p></div><div className="evidence-card"><span><Target size={18} /> Goals</span><strong>{forecast.goalForecasts.length ? `${forecast.goalForecasts.filter((item) => item.onTrack).length} on track` : "No goals yet"}</strong><p>{forecast.goalForecasts.length} modelled</p></div><p className="evidence-note">Coach explains the deterministic model. It does not calculate balances itself or recommend securities.</p></aside></div>
   </div>;
@@ -1913,7 +1919,7 @@ function TogetherView({ data, accounts, fx, members, viewerEmail, onSetup, onEdi
   const sharedAccounts = data.accounts.filter((item) => item.space === "household");
   const personalAccounts = data.accounts.filter((item) => item.space === "personal");
   const visibleMembers = members.length ? members : [{ email: viewerEmail, display_name: data.profile.name, role: "owner", status: "active" }, ...(data.profile.partnerEmail ? [{ email: data.profile.partnerEmail, display_name: data.profile.partnerName, role: "member", status: "pending" }] : [])];
-  return <div className="page-stack"><PageHeading eyebrow="Private by default, shared on purpose" title={data.profile.householdName || "Together"} copy="Together combines your private records with records deliberately shared between members. The other person never receives your Personal records."><button className="primary-button" onClick={onSetup}><Settings2 size={17} /> Manage Together</button></PageHeading>
+  return <div className="page-stack"><PageHeading eyebrow="Private by default, shared on purpose" title={data.profile.householdName || "Together"}><button className="primary-button" onClick={onSetup}><Settings2 size={17} /> Manage Together</button></PageHeading>
     <section className="household-hero"><div className="household-orbits"><span className="avatar">{data.profile.name.slice(0, 1)}</span><span className="avatar partner-avatar">{data.profile.partnerName?.slice(0, 1) || "P"}</span></div><div><p className="eyebrow hero-eyebrow">Together, with boundaries</p><h2>{formatMoney(sumAccountsInBase(sharedAccounts, fx.base, fx.rates).total)} shared net worth</h2><p>{sharedAccounts.length} shared accounts · {personalAccounts.length} personal accounts stay private in each member’s Personal view.</p></div></section>
     <div className="dashboard-grid"><section className="panel members-panel"><PanelHeading eyebrow="People and access" title="Together members" action="Manage" onAction={onSetup} /><div className="member-list">{visibleMembers.map((member) => <div key={member.email}><span className="avatar">{(member.display_name || member.email).slice(0, 1).toUpperCase()}</span><span><strong>{member.display_name || member.email}</strong><small>{member.email}</small></span><span className={member.status === "active" ? "member-status active-member" : "member-status"}>{member.status === "active" ? "Active" : "Invite pending"}</span><small>{member.role}</small></div>)}</div><div className="info-note"><ShieldCheck size={17} /><span>An invitation activates only for the same verified Google or Apple email. Database access rules keep every Personal space owner-only.</span></div></section><section className="panel access-panel"><PanelHeading eyebrow="Visibility" title="What the other person can see" /><div className="privacy-map"><div><span>Personal</span><strong>{personalAccounts.length} accounts</strong><small>Only you can read these records.</small></div><div><span>Shared in Together</span><strong>{sharedAccounts.length} accounts</strong><small>Visible to active Together members.</small></div></div><p className="privacy-caption">Your Together dashboard currently combines {accounts.length} accounts visible to you, without counting transfers as income or spending.</p></section></div>
     <section className="panel household-accounts"><PanelHeading eyebrow="Shared balance sheet" title="Accounts shared in Together" /><div className="account-card-grid">{sharedAccounts.map((account, index) => <AccountCard key={account.id} account={account} fx={fx} index={index} onEdit={() => onEditAccount(account)} />)}{!sharedAccounts.length && <EmptyState icon={<Users />} title="Nothing shared yet" copy="Edit an account and set its visibility to Shared in Together." />}</div></section>
@@ -1945,16 +1951,14 @@ function ActivityView({ transactions, accounts, fx, search, setSearch, onAdd, on
     (result[transaction.date] ||= []).push(transaction);
     return result;
   }, {});
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const activeFilterCount = (search.trim() ? 1 : 0) + (filter === "all" ? 0 : 1) + (period === "month" ? 0 : 1);
   const visibleIncome = sumTransactionsInBase(transactions.filter((transaction) => transaction.type === "income"), accounts, fx.base, fx.rates).total;
   const visibleSpending = sumTransactionsInBase(transactions.filter((transaction) => transaction.type === "expense"), accounts, fx.base, fx.rates).total;
   const visibleCashFlow = visibleIncome - visibleSpending;
 
   return (
     <div className="page-stack activity-page">
-      <PageHeading eyebrow="Unified ledger" title="Activity" copy={`Every movement, across every account. Transfers never count as income or spending.`}>
-        <button className="secondary-button" onClick={onImport}><Upload size={17} /> Import</button>
-        <button className="primary-button" onClick={onAdd}><Plus size={18} /> Add transaction</button>
-      </PageHeading>
 
       <section className="activity-sticky-summary">
         <div className="activity-summary-top">
@@ -1971,11 +1975,21 @@ function ActivityView({ transactions, accounts, fx, search, setSearch, onAdd, on
           <div className="activity-mini-stat"><span>Out</span><strong>−{formatMoney(visibleSpending)}</strong></div>
         </div>
 
-        <div className="activity-controls">
+        <div className={filtersOpen ? "activity-controls is-open" : "activity-controls"}>
           <div className="view-switcher" aria-label="Activity layout">
             <button className={mode === "feed" ? "view-active" : ""} onClick={() => setMode("feed")}><List size={17} /> Feed</button>
             <button className={mode === "ledger" ? "view-active" : ""} onClick={() => setMode("ledger")}><Table2 size={17} /> Ledger</button>
           </div>
+          <button
+            type="button"
+            className={filtersOpen ? "filter-disclosure is-open" : "filter-disclosure"}
+            onClick={() => setFiltersOpen((open) => !open)}
+            aria-expanded={filtersOpen}
+          >
+            <SlidersHorizontal size={16} />
+            Filter
+            {activeFilterCount > 0 && <span>{activeFilterCount}</span>}
+          </button>
           <label className="search-field"><Search size={18} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search merchant, category, or note" /></label>
           <label className="select-filter"><span className="sr-only">Transaction type</span><select value={filter} onChange={(event) => setFilter(event.target.value as ActivityFilter)}><option value="all">All types</option><option value="expense">Expenses</option><option value="income">Income</option><option value="transfer">Transfers</option></select><ChevronDown size={15} /></label>
           <label className="select-filter period-filter"><span className="sr-only">Date range</span><select value={period} onChange={(event) => setPeriod(event.target.value as ActivityPeriod)}><option value="month">This month</option><option value="all">All time</option></select><ChevronDown size={15} /></label>
@@ -2036,9 +2050,6 @@ function AccountsView({ accounts, netWorth, fx, onAdd, onEdit }: { accounts: Acc
 
   return (
     <div className="page-stack">
-      <PageHeading eyebrow="Balance sheet" title="Accounts" copy="One calm view of cash, savings, cards, and investments.">
-        <button className="primary-button" onClick={onAdd}><Plus size={18} /> Add account</button>
-      </PageHeading>
       <section className="accounts-hero">
         <div><p className="eyebrow">Total net worth</p><strong>{<AnimatedNumber value={netWorth} format={(n) => formatMoney(n)} />}</strong><span><WalletCards size={15} /> Across {accounts.length} account{accounts.length === 1 ? "" : "s"}</span></div>
         <div className="balance-breakdown">
@@ -2075,10 +2086,6 @@ function PlansView({ goals, recurring, accounts, recurringCost, fx, onAddGoal, o
 }) {
   return (
     <div className="page-stack">
-      <PageHeading eyebrow="The life ahead" title="Plans" copy="Shared ambitions and quiet personal goals, each with a clear path.">
-        <button className="secondary-button" onClick={onAddRecurring}><Repeat2 size={17} /> Add recurring</button>
-        <button className="primary-button" onClick={onAddGoal}><Plus size={18} /> New goal</button>
-      </PageHeading>
 
       <div className="section-heading"><div><p className="eyebrow">Milestones</p><h2>Goals in motion</h2></div><span>{goals.length} active</span></div>
       <section className="goal-grid">
@@ -2138,10 +2145,10 @@ function PanelHeading({ eyebrow, title, action, onAction }: { eyebrow: string; t
   );
 }
 
-function PageHeading({ eyebrow, title, copy, children }: { eyebrow: string; title: string; copy: string; children?: React.ReactNode }) {
+function PageHeading({ eyebrow, title, children }: { eyebrow: string; title: string; children?: React.ReactNode }) {
   return (
     <header className="page-heading">
-      <div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1><p>{copy}</p></div>
+      <div><p className="eyebrow">{eyebrow}</p><h1>{title}</h1></div>
       {children && <div className="page-heading-actions">{children}</div>}
     </header>
   );

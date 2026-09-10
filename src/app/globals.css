@@ -620,7 +620,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .empty-state > span { width: 38px; height: 38px; display: grid; place-items: center; margin-bottom: 11px; border-radius: 12px; color: var(--green-600); background: rgba(92,146,124,.1); }
 .empty-state strong { font-size: var(--text-sm); }.empty-state p { margin: 5px 0 0; color: var(--muted); font-size: var(--text-2xs); }
 
-.page-heading { min-height: 110px; display: flex; align-items: end; justify-content: space-between; gap: 25px; padding: 10px 3px 2px; }
+.page-heading { display: flex; align-items: end; justify-content: space-between; gap: 25px; padding: 6px 3px 2px; }
 .page-heading h1 { margin: 0; font-size: clamp(34px,4vw,48px); line-height: 1; letter-spacing: -.045em; }
 .page-heading > div > p:last-child { max-width: 650px; margin: 10px 0 0; color: var(--muted); font-size: var(--text-sm); line-height: 1.55; }
 
@@ -940,7 +940,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .account-row { grid-template-columns: auto 1fr auto; }.account-scope { display: none; }.account-row > strong { min-width: 76px; }
   .transaction-row { grid-template-columns: auto minmax(0,1fr) auto; gap: 9px; min-height: 68px; padding-inline: 4px; }.transaction-date, .transaction-space { display: none; }.transaction-amount { min-width: 78px; }.activity-feed-panel .row-actions { display: none; }
   .compact-list .transaction-row:nth-child(n+5) { display: none; }
-  .page-heading { min-height: 130px; display: block; padding: 14px 3px 0; }.page-heading h1 { font-size: var(--text-3xl); }.page-heading > div:first-child > p:last-child { font-size: var(--text-sm); line-height: 1.55; }.page-heading-actions { flex-wrap: wrap; margin-top: 18px; }.page-heading-actions button { min-height: 46px; flex: 1; }
+  .page-heading { display: block; padding: 2px 3px 0; }.page-heading h1 { font-size: var(--text-3xl); }.page-heading > div:first-child > p:last-child { font-size: var(--text-sm); line-height: 1.55; }.page-heading-actions { flex-wrap: wrap; margin-top: 18px; }.page-heading-actions button { min-height: 46px; flex: 1 1 auto; min-width: max-content; white-space: nowrap; }
   .activity-sticky-summary { top: calc(74px + env(safe-area-inset-top)); padding: 12px; border-radius: 17px; }
   .activity-summary-top { grid-template-columns: 1fr auto; gap: 8px; }.activity-mini-stat { display: none; }.activity-month-stepper label { min-width: 0; padding-inline: 4px; }.activity-month-stepper label strong { font-size: var(--text-sm); }.activity-balance { text-align: right; }.activity-balance strong { font-size: var(--text-lg); }
   .activity-controls { flex-wrap: wrap; margin-top: 11px; padding-top: 11px; }.view-switcher { width: 100%; }.view-switcher button { flex: 1; justify-content: center; }.search-field { min-width: 100%; }.select-filter { min-width: 116px; flex: 1; }
@@ -1124,4 +1124,46 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto!important; animation-duration: .01ms!important; transition-duration: .01ms!important; }
+}
+
+/* The disclosure only exists on a phone; a wider viewport has room to show every control. */
+.filter-disclosure { display: none; align-items: center; gap: 7px; min-height: 41px; padding: 0 13px; border: 1px solid var(--line); border-radius: 11px; color: var(--ink); background: var(--paper); font-size: var(--text-sm); font-weight: var(--weight-strong); cursor: pointer; }
+.filter-disclosure.is-open { color: var(--accent-on); border-color: var(--accent-surface); background: var(--accent-surface); }
+.filter-disclosure span { display: grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; color: var(--accent-on); background: var(--green-500); font-size: var(--text-2xs); }
+.filter-disclosure.is-open span { color: var(--forest); background: var(--paper-solid); }
+
+/* Phone density pass. Measured before this: on a 664px viewport the first transaction row
+   sat at 654px — the entire screen was chrome and the ledger began below the fold. The page
+   heading alone was 134px, and the activity toolbar stacked its month stepper, balance, view
+   switcher, search and two filters onto five separate rows. */
+@media (max-width: 640px) {
+  .page-heading { gap: 12px; padding-top: 2px; }
+  .page-heading h1 { font-size: var(--text-2xl); line-height: 1.05; }
+  .page-heading .eyebrow { font-size: var(--text-2xs); }
+  .page-heading-actions { margin-top: 12px; gap: 8px; }
+  .page-heading-actions button { min-height: 44px; }
+
+  /* Month and balance belong on one line: they are a single fact about the period. */
+  .activity-summary-top { grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 10px; }
+  .activity-balance { text-align: right; font-size: var(--text-lg); }
+
+  /* The switcher is a two-state toggle, not a full-width control. */
+  .view-switcher { width: auto; flex: 0 0 auto; }
+  .activity-controls { gap: 8px; margin-top: 10px; padding-top: 10px; }
+  /* Search and the two selects live behind the Filter button until asked for. */
+  .activity-controls .search-field,
+  .activity-controls .select-filter { display: none; }
+  .activity-controls.is-open .search-field { display: flex; flex: 1 1 100%; order: 3; }
+  .activity-controls.is-open .select-filter { display: flex; flex: 1 1 0; min-width: 0; order: 4; }
+  .filter-disclosure { display: inline-flex; }
+}
+
+/* The heading measured 130px for 88px of type and buttons — 42px was padding around a block
+   that no longer holds a paragraph. */
+@media (max-width: 640px) {
+  .page-heading { gap: 8px; padding: 0 3px 0; }
+  .page-heading .eyebrow { margin: 0 0 2px; }
+  .page-heading h1 { margin: 0; }
+  .page-heading-actions { margin-top: 10px; }
+  .section-tabs.money-tabs { margin-top: 4px; }
 }

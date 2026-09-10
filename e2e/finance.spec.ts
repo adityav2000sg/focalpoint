@@ -65,7 +65,7 @@ test("Money controls open the correct flows on mobile", async ({ page, isMobile 
   await expect(page.getByRole("heading", { name: "Add transaction" })).toBeVisible();
   await page.getByRole("button", { name: "Close" }).click();
   await page.getByRole("tab", { name: "Imports" }).click();
-  await expect(page.getByRole("heading", { name: "Imported transactions" })).toBeVisible();
+  await expect(page.getByText("No imports waiting")).toBeVisible();
 });
 
 test("monthly budgets can be created, edited, and removed", async ({ page, isMobile }) => {
