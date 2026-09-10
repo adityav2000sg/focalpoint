@@ -1543,8 +1543,7 @@ function Overview({
           <div>
             <p className="eyebrow hero-eyebrow">{today.toLocaleDateString("en-SG", { weekday: "long", day: "numeric", month: "long" })}</p>
             <h1>Good morning, {firstName}.</h1>
-            <p className="hero-copy">Here’s how {scopeCopy} is growing.</p>
-          </div>
+            </div>
           <div className="hero-balance">
             <div className="hero-label-row"><span>{scopeLabel} net worth</span><span className="live-pill"><i /> {accounts.length} account{accounts.length === 1 ? "" : "s"}</span></div>
             <strong>{<AnimatedNumber value={netWorth} format={(n) => formatMoney(n)} split />}</strong>

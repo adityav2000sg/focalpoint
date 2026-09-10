@@ -327,7 +327,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .content { width: min(100%, 1440px); margin: 0 auto; padding: 28px 34px 70px; }
 .page-stack { display: flex; flex-direction: column; gap: 22px; animation: view-rise var(--motion-view) var(--motion-ease-out); }
 
-.hero-card { position: relative; min-height: 306px; display: flex; flex-direction: column; justify-content: space-between; padding: 36px 40px 30px; color: var(--accent-on); background: linear-gradient(135deg, var(--green-800) 0%, var(--green-800) 62%, var(--green-800) 100%); border: 1px solid rgba(255,255,255,.06); border-radius: 28px; overflow: hidden; box-shadow: var(--elev-4); }
+.hero-card { position: relative; min-height: 232px; display: flex; flex-direction: column; gap: 20px; padding: 36px 40px 30px; color: var(--accent-on); background: linear-gradient(135deg, var(--green-800) 0%, var(--green-800) 62%, var(--green-800) 100%); border: 1px solid rgba(255,255,255,.06); border-radius: 28px; overflow: hidden; box-shadow: var(--elev-4); }
 .hero-grid { position: absolute; inset: 0; opacity: .12; background-image: linear-gradient(var(--paper-veil) 1px, transparent 1px), linear-gradient(90deg, var(--paper-veil) 1px, transparent 1px); background-size: 42px 42px; mask-image: linear-gradient(to right, transparent, black); }
 .hero-orb { position: absolute; border-radius: 50%; filter: blur(2px); }
 .hero-orb-one { width: 290px; height: 290px; right: -42px; top: -125px; background: radial-gradient(circle at 35% 60%, rgba(212,248,132,.31), rgba(76,177,144,.06) 60%, transparent 70%); border: 1px solid rgba(215,249,142,.15); box-shadow: var(--elev-4); }
@@ -909,9 +909,9 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .scope-switcher { margin-left: auto; margin-right: auto; }
   .scope-option { min-height: 42px; padding: 8px 12px; }
   .scope-long { display: none; }.scope-short { display: inline; }
-  .content { padding: 18px 16px calc(122px + env(safe-area-inset-bottom)); }
+  .content { padding: 18px 16px calc(166px + env(safe-area-inset-bottom)); }
   .page-stack { gap: 16px; }
-  .hero-card { min-height: 390px; padding: 25px 22px 22px; border-radius: 24px; }
+  .hero-card { min-height: 0; padding: 25px 22px 22px; border-radius: 24px; }
   .hero-card h1 { max-width: 290px; font-size: var(--text-3xl); }
   .hero-copy { max-width: 250px; }
   .hero-balance { padding: 16px; }
@@ -960,7 +960,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 @media (max-width: 420px) {
   .topbar { padding-inline: 10px; }
   .scope-option { padding-inline: 10px; }
-  .hero-card { min-height: 430px; }.hero-card h1 { font-size: var(--text-3xl); }.hero-actions { flex-direction: column; }.hero-button, .hero-secondary { flex: none; width: 100%; }
+  .hero-card { min-height: 0; }.hero-card h1 { font-size: var(--text-3xl); }.hero-actions { flex-direction: column; }.hero-button, .hero-secondary { flex: none; width: 100%; }
   .metric-card { min-width: 160px; }
   .money-snapshot-grid { grid-template-columns: 1fr; }.money-total-card, .money-mini-card:last-child { grid-column: auto; }
   .page-heading h1 { font-size: var(--text-3xl); }
@@ -1187,3 +1187,12 @@ button:disabled { cursor: not-allowed; opacity: .48; }
    stops a large balance reading like a serial number. Deliberately not applied to amounts in
    rows or tables, where every digit carries the same weight. */
 .amount-fraction { font-size: .58em; font-weight: var(--weight-medium); opacity: .62; letter-spacing: 0; vertical-align: baseline; }
+
+/* On a phone the two hero actions stacked full width and ate 280px between the balance and
+   everything below it. They are one row now: the voice capture leads, and the shortcut into
+   Money sits beside it rather than beneath. */
+@media (max-width: 640px) {
+  .hero-actions { display: grid; grid-template-columns: minmax(0,1.35fr) minmax(0,1fr); gap: 9px; }
+  .hero-actions > * { min-width: 0; }
+  .hero-button, .hero-secondary { justify-content: center; padding-inline: 12px; white-space: nowrap; }
+}
