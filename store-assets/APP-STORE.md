@@ -8,7 +8,7 @@ Where a value is a judgement call, it says so.
 | App name | Lifetime |
 | Bundle ID | `com.adityav2000.focalpoint` |
 | Marketing version | `MARKETING_VERSION` in `ios/App/App.xcodeproj` (currently `1.0`) |
-| Build number | `CURRENT_PROJECT_VERSION` (currently `1`) |
+| Build number | `CURRENT_PROJECT_VERSION` (currently `2`) |
 | Device families | iPhone and iPad (`TARGETED_DEVICE_FAMILY = "1,2"`) |
 | Privacy policy URL | `https://myfocalpoint.netlify.app/privacy` |
 | Support URL | `https://myfocalpoint.netlify.app/support` |
@@ -148,14 +148,35 @@ overlay is suppressed during this run only, via `STORE_SCREENSHOTS=1`.
 
 ## 7. Build and upload
 
+**`cap sync` needs Node 22; this machine defaults to Node 20**, and the CLI aborts with
+`The Capacitor CLI requires NodeJS >=22.0.0` instead of syncing. nvm already has 22:
+
+```bash
+nvm use 22 && npm run ios:sync && npm run ios:open
+```
+
+Skipping the sync ships the previous web bundle *and* leaves the native plugins
+unregistered, so Face ID and reminders would fail at runtime in a build that otherwise
+looks fine. A successful sync lists five plugins: biometric-auth, app, browser, haptics,
+local-notifications.
+
 ```bash
 npm run verify
-npm run ios:sync
-npm run ios:open
 ```
 
 In Xcode: select *Any iOS Device*, set the team and signing, bump
 `CURRENT_PROJECT_VERSION` for each upload, then Product → Archive → Distribute App.
+
+## 8. Device capabilities added since this was first drafted
+
+Two native plugins now ship, and both ask permission on first use:
+
+- **Face ID / passcode lock** — `NSFaceIDUsageDescription` is set. Biometrics needs no
+  entitlement, so nothing to add in Signing & Capabilities for this one.
+- **Local notifications** — no entitlement either. The app asks for notification permission
+  the first time reminders are switched on. If review asks what they are for: they are built
+  on-device from the user's own recurring payments and planned events, and nothing is sent
+  to a server.
 
 ## 8. What still needs you
 

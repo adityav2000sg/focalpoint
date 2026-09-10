@@ -7,6 +7,19 @@ import { test, type Page } from "@playwright/test";
 
 const iso = (offsetDays: number) => new Date(Date.now() + offsetDays * 86_400_000).toISOString().slice(0, 10);
 
+// Ninety days of history so the chart has a real shape rather than an empty state.
+const history = Array.from({ length: 90 }, (_, index) => {
+  const value = 38_500 + index * 235 + Math.sin(index / 7) * 1_450;
+  return {
+    date: iso(index - 89),
+    netWorth: Number(value.toFixed(2)),
+    liquid: Number((value * 0.58).toFixed(2)),
+    investments: Number((value * 0.47).toFixed(2)),
+    liabilities: Number((value * 0.05).toFixed(2)),
+    currency: "SGD" as const,
+  };
+});
+
 const workspace = {
   version: 3,
   profile: {
@@ -19,6 +32,8 @@ const workspace = {
     { id: "a2", name: "Emergency", institution: "OCBC", type: "savings", space: "personal", owner: "Peter", balance: 24800, currency: "SGD", accent: "sky" },
     { id: "a3", name: "Brokerage", institution: "IBKR", type: "investment", space: "personal", owner: "Peter", balance: 18250, currency: "USD", accent: "violet" },
     { id: "a4", name: "Everyday Card", institution: "Amex", type: "credit", space: "personal", owner: "Peter", balance: -862.4, currency: "SGD", last4: "1003", accent: "coral" },
+    { id: "a5", name: "CPF", institution: "CPF Board", type: "cpf", space: "personal", owner: "Peter", balance: 61_400, currency: "SGD", accent: "lime" },
+    { id: "a6", name: "Travel cash", institution: "Wise", type: "cash", space: "personal", owner: "Peter", balance: 940, currency: "SGD", last4: "2260", accent: "gold" },
   ],
   transactions: [
     { id: "t1", type: "income", amount: 7400, date: iso(-3), description: "Salary", category: "Income", accountId: "a1", space: "personal", source: "manual" },
@@ -41,6 +56,7 @@ const workspace = {
   spendingPlans: [{ id: "p1", category: "Food", monthlyLimit: 900, space: "personal" }],
   plannedEvents: [{ id: "e1", name: "Flights to Osaka", amount: 2400, date: iso(120), kind: "travel", space: "personal", includeInPlan: true, currency: "SGD" }],
   inbox: [],
+  history,
 };
 
 async function mock(page: Page) {
@@ -86,4 +102,10 @@ test("app store screenshots", async ({ page }, info) => {
   await page.getByRole("button", { name: /Capture/ }).locator(":visible").first().click();
   await page.waitForTimeout(700);
   await shot("05", "capture");
+
+  await page.keyboard.press("Escape");
+  await page.emulateMedia({ colorScheme: "dark" });
+  await go("Today");
+  await page.waitForTimeout(900);
+  await shot("06", "today-dark");
 });
