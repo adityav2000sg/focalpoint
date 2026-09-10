@@ -178,11 +178,34 @@ Two native plugins now ship, and both ask permission on first use:
   on-device from the user's own recurring payments and planned events, and nothing is sent
   to a server.
 
+## 8. The account this ships under
+
+There is no membership yet. The only Apple Developer team this Apple Account was ever on
+belonged to Samba Africa Corp (via Ticketer), with a Developer role that could not create an
+App ID, a Services ID, a Sign in with Apple key, an app record, or submit anything — and it
+had lapsed anyway. That team has been left, and nothing here depended on it.
+
+**Enrol as an Individual**, at https://developer.apple.com/programs/enroll/ — $99/year, and
+it makes this Apple Account the Account Holder, which is the only role that can do every
+step below. Use the same Apple Account that Xcode is signed in with.
+
+Two things to know before enrolling:
+
+- Enrolling through the **Apple Developer app on iPhone or iPad** verifies identity with the
+  device and is usually far faster than the web form.
+- An Individual enrolment lists your **legal name** as the seller on the public App Store
+  listing. That is normal for a personal app; an organisation enrolment shows a company name
+  instead but requires a D-U-N-S number and takes considerably longer.
+
+Loopbase is unaffected — it is a web platform with no App Store presence. If it ever ships
+an app, that is a separate decision about which entity publishes it, not something this
+membership forecloses.
+
 ## 8. What still needs you
 
 Everything below requires your Apple account and cannot be done from this repository:
 
-- [ ] Apple Developer Program membership
+- [ ] Apple Developer Program membership — Individual enrolment (section 8)
 - [ ] Sign in with Apple configured end to end (section 1) — **blocking**
 - [ ] Signing certificate and provisioning profile
 - [ ] App record created in App Store Connect with the bundle ID above
