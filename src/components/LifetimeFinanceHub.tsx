@@ -80,6 +80,7 @@ import {
   baseExpenseCategories,
   normaliseCategoryName,
   buildHorizon,
+  merchantMark,
   historyChange,
   historyWindow,
   type NetWorthPoint,
@@ -1546,7 +1547,7 @@ function Overview({
           </div>
           <div className="hero-balance">
             <div className="hero-label-row"><span>{scopeLabel} net worth</span><span className="live-pill"><i /> {accounts.length} account{accounts.length === 1 ? "" : "s"}</span></div>
-            <strong>{<AnimatedNumber value={netWorth} format={(n) => formatMoney(n)} />}</strong>
+            <strong>{<AnimatedNumber value={netWorth} format={(n) => formatMoney(n)} split />}</strong>
             <p>{monthCashFlow >= 0 ? <TrendingUp size={16} /> : <ArrowUpRight size={16} />} {monthCashFlow >= 0 ? "+" : "−"}{formatMoney(Math.abs(monthCashFlow))} net cash flow in {selectedMonthLabel}</p>
           </div>
         </div>
@@ -1741,7 +1742,7 @@ function MoneyView({ section, setSection, fx, history, categories, accounts, all
 
       {section === "snapshot" && <>
         <section className="money-snapshot-grid">
-          <div className="money-total-card"><p className="eyebrow">Net worth</p><strong>{<AnimatedNumber value={netWorth} format={(n) => formatMoney(n)} />}</strong><span>Assets {formatMoney(sumAccountsInBase(assets, fx.base, fx.rates).total)} · Liabilities {formatMoney(Math.abs(sumAccountsInBase(liabilities, fx.base, fx.rates).total))}</span></div>
+          <div className="money-total-card"><p className="eyebrow">Net worth</p><strong>{<AnimatedNumber value={netWorth} format={(n) => formatMoney(n)} split />}</strong><span>Assets {formatMoney(sumAccountsInBase(assets, fx.base, fx.rates).total)} · Liabilities {formatMoney(Math.abs(sumAccountsInBase(liabilities, fx.base, fx.rates).total))}</span></div>
           <div className="money-mini-card"><span><ArrowDownLeft size={17} /> Income</span><strong>{<AnimatedNumber value={monthIncome} format={(n) => formatMoney(n)} />}</strong><small>{selectedMonthLabel}</small></div>
           <div className="money-mini-card"><span><ArrowUpRight size={17} /> Spending</span><strong>{<AnimatedNumber value={monthSpending} format={(n) => formatMoney(n)} />}</strong><small>Transfers excluded</small></div>
           <button className="money-mini-card actionable-card" onClick={() => setSection("activity")}><span><ArrowLeftRight size={17} /> Transactions</span><strong>{monthTransactions.length}</strong><small>{selectedMonthLabel}</small></button>
@@ -2195,9 +2196,14 @@ function TransactionRow({ transaction, accounts, index = 0, showSpace = false, o
   const source = accounts.find((account) => account.id === transaction.accountId);
   const destination = accounts.find((account) => account.id === transaction.transferAccountId);
   const Icon = transaction.type === "income" ? ArrowDownLeft : transaction.type === "transfer" ? ArrowLeftRight : ArrowUpRight;
+  const mark = merchantMark(transaction.description);
   return (
     <div className={`transaction-row row-enter ${onEdit ? "editable-row" : ""}`} style={{ "--i": Math.min(index, 12) } as React.CSSProperties} onClick={onEdit} onKeyDown={(event) => { if (onEdit && (event.key === "Enter" || event.key === " ")) onEdit(); }} role={onEdit ? "button" : undefined} tabIndex={onEdit ? 0 : undefined}>
-      <span className={`transaction-icon transaction-${transaction.type}`}><Icon size={18} /></span>
+      {transaction.type === "transfer" ? (
+        <span className={`transaction-icon transaction-${transaction.type}`}><Icon size={18} /></span>
+      ) : (
+        <span className="transaction-mark" style={{ "--hue": mark.hue } as React.CSSProperties} aria-hidden>{mark.initials}</span>
+      )}
       <span className="transaction-name">
         <strong>{transaction.description}</strong>
         <small>{transaction.type === "transfer" ? `${source?.name || "Account"} → ${destination?.name || "Account"}` : `${transaction.category} · ${source?.name || "Account"}`}</small>

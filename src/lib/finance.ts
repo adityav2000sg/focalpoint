@@ -191,6 +191,40 @@ export interface FinanceData {
   inbox: InboxItem[];
 }
 
+export interface MerchantMark {
+  /** One or two letters, upper case. */
+  initials: string;
+  /** 0-359, stable for a given name so a merchant keeps its colour forever. */
+  hue: number;
+}
+
+/**
+ * A recognisable mark for a payee, derived only from its name.
+ *
+ * A ledger where every row carries the same arrow is unscannable — you have to read each
+ * line to find anything. Deriving the mark from the name means it is stable without storing
+ * anything, and consistent across devices, which a random colour at creation time would not
+ * be. Hue only: the surrounding lightness comes from the theme, so the same merchant works
+ * in light and dark without a second value.
+ */
+export function merchantMark(name: string): MerchantMark {
+  const cleaned = name.trim().replace(/[^\p{L}\p{N} ]/gu, " ").replace(/\s+/g, " ").trim();
+  const words = cleaned ? cleaned.split(" ") : [];
+  const initials = words.length >= 2
+    ? (words[0][0] + words[1][0]).toUpperCase()
+    : (cleaned.slice(0, 2) || "?").toUpperCase();
+
+  let hash = 2166136261;
+  const key = cleaned.toLowerCase();
+  for (let index = 0; index < key.length; index += 1) {
+    hash ^= key.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  // Skip the 40-70 band: those yellows go muddy against a warm neutral ground.
+  const raw = Math.abs(hash) % 330;
+  return { initials, hue: raw < 40 ? raw : raw + 30 };
+}
+
 export interface NetWorthPoint {
   /** Local calendar day, YYYY-MM-DD. One point per day. */
   date: string;

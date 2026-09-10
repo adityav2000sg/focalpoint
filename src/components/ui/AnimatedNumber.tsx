@@ -50,18 +50,38 @@ export function useCountUp(value: number, duration = 1100) {
   return { shown, running };
 }
 
+/**
+ * Splits a formatted amount at its decimal separator so the cents can be set back.
+ * On a hero figure the dollars are the number and the cents are a footnote; rendering both
+ * at the same size makes the whole thing read as a serial number. Returns null when there is
+ * no fractional part — a zero-decimal currency like JPY must not be cut apart.
+ */
+export function splitAmount(formatted: string): { whole: string; fraction: string } | null {
+  const at = formatted.lastIndexOf(".");
+  if (at < 0 || at === formatted.length - 1) return null;
+  const fraction = formatted.slice(at + 1);
+  if (!/^\d{1,2}$/.test(fraction)) return null;
+  return { whole: formatted.slice(0, at), fraction };
+}
+
 export default function AnimatedNumber({
-  value, format, duration, className,
+  value, format, duration, className, split = false,
 }: {
   value: number;
   format: (value: number) => string;
   duration?: number;
   className?: string;
+  /** Set the cents back from the dollars. For hero figures only. */
+  split?: boolean;
 }) {
   const { shown, running } = useCountUp(value, duration);
+  const formatted = format(shown);
+  const parts = split ? splitAmount(formatted) : null;
+  const classes = running ? `counting ${className || ""}`.trim() : className;
+  if (!parts) return <span className={classes}>{formatted}</span>;
   return (
-    <span className={running ? `counting ${className || ""}`.trim() : className}>
-      {format(shown)}
+    <span className={classes}>
+      {parts.whole}<span className="amount-fraction">.{parts.fraction}</span>
     </span>
   );
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { splitAmount } from "@/components/ui/AnimatedNumber";
 import {
   Account,
   FinanceData,
@@ -7,6 +8,7 @@ import {
   advanceRecurringDate,
   allExpenseCategories,
   buildHorizon,
+  merchantMark,
   historyChange,
   historyWindow,
   normaliseCategoryName,
@@ -554,5 +556,61 @@ describe("recurring income", () => {
     const forecast = buildForecast({ ...base, recurring: [item({ type: undefined, name: "Rent" })] }, "personal");
     expect(forecast.recurringCost).toBe(6000);
     expect(forecast.recurringIncome).toBe(0);
+  });
+});
+
+describe("merchant marks", () => {
+  it("takes initials from the first two words", () => {
+    expect(merchantMark("Cold Storage").initials).toBe("CS");
+    expect(merchantMark("Sheng Siong Supermarket").initials).toBe("SS");
+  });
+
+  it("falls back to the first two letters of a single word", () => {
+    expect(merchantMark("Yochi").initials).toBe("YO");
+    expect(merchantMark("A").initials).toBe("A");
+  });
+
+  it("survives punctuation and stray spacing", () => {
+    expect(merchantMark("  grab*ride  ").initials).toBe("GR");
+    expect(merchantMark("7-Eleven").initials).toBe("7E");
+  });
+
+  it("never returns an empty mark", () => {
+    expect(merchantMark("").initials).toBe("?");
+    expect(merchantMark("   ").initials).toBe("?");
+    expect(merchantMark("!!!").initials).toBe("?");
+  });
+
+  it("gives a merchant the same colour every time, and is case-insensitive", () => {
+    expect(merchantMark("Yochi").hue).toBe(merchantMark("Yochi").hue);
+    expect(merchantMark("yochi").hue).toBe(merchantMark("YOCHI").hue);
+  });
+
+  it("separates different merchants and stays inside a legible band", () => {
+    const hues = ["Yochi", "Cold Storage", "Grab", "Spotify", "Rent"].map((n) => merchantMark(n).hue);
+    expect(new Set(hues).size).toBeGreaterThan(3);
+    for (const hue of hues) {
+      expect(hue).toBeGreaterThanOrEqual(0);
+      expect(hue).toBeLessThan(360);
+      // The muddy yellow band is deliberately skipped.
+      expect(hue < 40 || hue >= 70).toBe(true);
+    }
+  });
+});
+
+describe("hero amount splitting", () => {
+  it("sets the cents apart from the dollars", () => {
+    expect(splitAmount("$117,212.85")).toEqual({ whole: "$117,212", fraction: "85" });
+    expect(splitAmount("-$862.40")).toEqual({ whole: "-$862", fraction: "40" });
+  });
+
+  it("leaves a zero-decimal currency alone rather than cutting it apart", () => {
+    expect(splitAmount("JPY 12,000")).toBeNull();
+    expect(splitAmount("$1,200")).toBeNull();
+  });
+
+  it("refuses anything that is not a real fractional part", () => {
+    expect(splitAmount("$1,200.")).toBeNull();
+    expect(splitAmount("1.2.3.456")).toBeNull();
   });
 });

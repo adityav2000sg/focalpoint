@@ -133,3 +133,25 @@ test("an open overlay swallows the gesture instead of refreshing behind it", asy
   expect(fetches).toBe(before);
   await expect(page.locator(".pull-refresh")).toHaveCount(0);
 });
+
+test("surfaces on the dark hero stay dark in both themes", async ({ page }) => {
+  await mock(page);
+  await page.goto("/preview");
+  await page.waitForTimeout(900);
+
+  // A panel sitting on the dark hero card must never be painted with a light paper token.
+  // Three separate regressions have put a pale slab on that card; this is the guard.
+  for (const scheme of ["light", "dark"] as const) {
+    await page.emulateMedia({ colorScheme: scheme });
+    await page.waitForTimeout(250);
+    const luminance = await page.locator(".hero-balance").evaluate((node) => {
+      const rgb = getComputedStyle(node).backgroundColor.match(/[\d.]+/g)!.map(Number);
+      const [r, g, b, a = 1] = rgb;
+      // Composite over the dark card behind it before judging.
+      const card = 24;
+      const mix = (c: number) => c * a + card * (1 - a);
+      return 0.2126 * mix(r) + 0.7152 * mix(g) + 0.0722 * mix(b);
+    });
+    expect(luminance, `${scheme} hero panel should stay dark`).toBeLessThan(110);
+  }
+});
