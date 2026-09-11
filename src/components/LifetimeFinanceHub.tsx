@@ -179,6 +179,10 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
   const [data, setData] = useState<FinanceData>(() => createViewerSeed(viewer));
   const [scope, setScope] = useState<ViewScope>("personal");
   const [activeView, setActiveView] = useState<ViewId>("today");
+  /* The screen's own title rises into the bar once it scrolls past it, and the
+     bar keeps the wordmark until then. This is the cue that tells you where you
+     are after you have scrolled away from the heading that said so. */
+  const [collapsedTitle, setCollapsedTitle] = useState<string | null>(null);
   const [moneySection, setMoneySection] = useState<MoneySection>("snapshot");
   const [modal, setModal] = useState<ModalId>(null);
   const [search, setSearch] = useState("");
@@ -228,6 +232,24 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
   const hasTogether = hasTogetherAccess(data.profile, householdMembers, viewer.email);
   const navItems = hasTogether ? [...baseNavItems, { id: "together" as const, label: "Together", icon: TogetherGlyph }] : baseNavItems;
   const scopeOptions = hasTogether ? [personalScopeOption, togetherScopeOption] : [personalScopeOption];
+
+  useEffect(() => {
+    if (typeof IntersectionObserver === "undefined" || !hydrated) return;
+    /* Re-bound on every view change, because each screen owns its own heading.
+       On Today the thing worth carrying into the bar is the balance, not the
+       greeting — once you have scrolled past it, that is the number you want
+       back. Every other screen carries its title. */
+    const anchor = document.querySelector<HTMLElement>(".hero-balance, .page-heading h1");
+    if (!anchor) { setCollapsedTitle(null); return; }
+    const bar = document.querySelector<HTMLElement>(".topbar");
+    const observer = new IntersectionObserver(
+      ([entry]) => setCollapsedTitle(entry.isIntersecting ? null : anchor.textContent?.trim() || null),
+      // Fire when the anchor passes under the bar, not when it leaves the viewport.
+      { rootMargin: `-${(bar?.offsetHeight || 60) + 4}px 0px 0px 0px`, threshold: 0 },
+    );
+    observer.observe(anchor);
+    return () => observer.disconnect();
+  }, [activeView, moneySection, hydrated]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1071,7 +1093,12 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
           {/* One segment is not a switch. Until Together exists there is nothing to
               switch between, so the bar carries the wordmark instead of a control
               that cannot change anything. */}
-          {scopeOptions.length < 2 ? <span className="topbar-mark">Lifetime</span> : (
+          {scopeOptions.length < 2 ? (
+            <span className="topbar-centre">
+              <span className="topbar-mark" data-hidden={collapsedTitle ? "true" : undefined}>Lifetime</span>
+              <span className="topbar-title" data-shown={collapsedTitle ? "true" : undefined} aria-hidden={!collapsedTitle}>{collapsedTitle}</span>
+            </span>
+          ) : (
           <div className="scope-switcher" aria-label="Financial view">
             {scopeOptions.map((option) => {
               const Icon = option.icon;
