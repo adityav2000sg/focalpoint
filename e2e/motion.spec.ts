@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test, type Locator, type Page } from "@playwright/test";
 const day = (b: number) => new Date(Date.now() - b * 86400000).toISOString().slice(0, 10);
 const seed = {
   version: 3,
@@ -134,55 +134,117 @@ test("an open overlay swallows the gesture instead of refreshing behind it", asy
   await expect(page.locator(".pull-refresh")).toHaveCount(0);
 });
 
-test("surfaces on the dark hero stay dark in both themes", async ({ page }) => {
+/*
+ * Contrast of an element's own text against whatever is actually painted behind it.
+ * Walks up until it finds an opaque layer, then composites the translucent ones it
+ * passed back down, so a glass panel over a card is judged on the real result.
+ */
+async function contrast(node: Locator) {
+  return node.evaluate((el) => {
+    const parse = (value: string) => (value.match(/[\d.]+/g) || []).map(Number);
+    const layers: number[][] = [];
+    for (let node: Element | null = el; node; node = node.parentElement) {
+      const [r, g, b, a = 1] = parse(getComputedStyle(node).backgroundColor);
+      if (a > 0) layers.push([r, g, b, a]);
+      if (a >= 1) break;
+    }
+    let [br, bg, bb] = layers.pop() || [255, 255, 255];
+    while (layers.length) {
+      const [r, g, b, a] = layers.pop()!;
+      br = r * a + br * (1 - a); bg = g * a + bg * (1 - a); bb = b * a + bb * (1 - a);
+    }
+    const [fr, fg, fb, fa = 1] = parse(getComputedStyle(el).color);
+    const cr = fr * fa + br * (1 - fa), cg = fg * fa + bg * (1 - fa), cb = fb * fa + bb * (1 - fa);
+    const lum = (r: number, g: number, b: number) => {
+      const f = (c: number) => { const v = c / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+      return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+    };
+    const a1 = lum(cr, cg, cb), a2 = lum(br, bg, bb);
+    return (Math.max(a1, a2) + 0.05) / (Math.min(a1, a2) + 0.05);
+  });
+}
+
+test("text keeps its contrast on every surface, in both themes", async ({ page, isMobile }) => {
   await mock(page);
   await page.goto("/preview");
   await page.waitForTimeout(900);
-
-  // A panel sitting on the dark hero card must never be painted with a light paper token.
-  // Three separate regressions have put a pale slab on that card; this is the guard.
-  const onDark = [".hero-balance"];
-  for (const scheme of ["light", "dark"] as const) {
-    await page.emulateMedia({ colorScheme: scheme });
-    await page.waitForTimeout(250);
-    const luminance = await page.locator(onDark[0]).evaluate((node) => {
-      const rgb = getComputedStyle(node).backgroundColor.match(/[\d.]+/g)!.map(Number);
-      const [r, g, b, a = 1] = rgb;
-      // Composite over the dark card behind it before judging.
-      const card = 24;
-      const mix = (c: number) => c * a + card * (1 - a);
-      return 0.2126 * mix(r) + 0.7152 * mix(g) + 0.0722 * mix(b);
-    });
-    expect(luminance, `${scheme} hero panel should stay dark`).toBeLessThan(110);
-  }
-});
-
-test("every panel on a dark card stays dark, on every screen", async ({ page, isMobile }) => {
-  await mock(page);
-  await page.goto("/preview");
   const nav = isMobile ? ".mobile-nav button" : ".main-nav button";
 
-  // A paper token on a brand card has regressed four times now, on four different panels.
-  // Walk the screens that have one and check each in both themes.
-  const screens: Array<{ view: string; panel: string }> = [
-    { view: "Today", panel: ".hero-balance" },
-    { view: "Future", panel: ".future-stat" },
+  /*
+   * This replaces the guard that watched for a pale panel landing on a dark brand
+   * card. There are no dark brand cards left — every surface is a neutral plane —
+   * so the failure mode it caught cannot happen, and the one that can is the
+   * opposite: ink and its surface drifting toward each other until a figure is
+   * unreadable. Flattening the palette did exactly that to the three budget
+   * figures, which came out white on white; this is the guard for that.
+   *
+   * 4.5:1 is the WCAG AA floor for text below 18.66px, which covers every target
+   * here; the large figures clear it with room to spare.
+   */
+  const screens: Array<{ view: string; targets: string[] }> = [
+    { view: "Today", targets: [".hero-balance", ".hero-label-row", ".quick-action", ".coach-glance-copy strong", ".metric-card > strong"] },
+    { view: "Money", targets: [".money-total-card > strong", ".section-tab", ".page-heading h1"] },
+    { view: "Future", targets: [".future-hero h2", ".future-stat strong", ".runway-card h3"] },
+  ];
+  // Budget sits behind a tab rather than the tab bar, so it is reached separately.
+  const tabbed: Array<{ tab: string; targets: string[] }> = [
+    { tab: "Budget", targets: [".budget-hero h2", ".budget-summary strong", ".budget-summary small", ".plan-row-top"] },
+    { tab: "Accounts", targets: [".accounts-hero > div > strong"] },
   ];
 
-  for (const { view, panel } of screens) {
+  for (const { view, targets } of screens) {
     await page.locator(nav).filter({ hasText: new RegExp(`^${view}$`) }).click();
     await page.waitForTimeout(600);
     for (const scheme of ["light", "dark"] as const) {
       await page.emulateMedia({ colorScheme: scheme });
       await page.waitForTimeout(250);
-      const luminance = await page.locator(panel).first().evaluate((node) => {
-        const [r, g, b, a = 1] = getComputedStyle(node).backgroundColor.match(/[\d.]+/g)!.map(Number);
-        const card = 24;
-        const mix = (c: number) => c * a + card * (1 - a);
-        return 0.2126 * mix(r) + 0.7152 * mix(g) + 0.0722 * mix(b);
-      });
-      expect(luminance, `${view} ${panel} in ${scheme}`).toBeLessThan(110);
+      for (const target of targets) {
+        const node = page.locator(target).first();
+        if (!(await node.count())) continue;
+        expect(await contrast(node), `${view} ${target} in ${scheme}`).toBeGreaterThanOrEqual(4.5);
+      }
+    }
+  }
+
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.locator(nav).filter({ hasText: /^Money$/ }).click();
+  await page.waitForTimeout(500);
+  for (const { tab, targets } of tabbed) {
+    await page.getByRole("tab", { name: tab }).click();
+    await page.waitForTimeout(600);
+    for (const scheme of ["light", "dark"] as const) {
+      await page.emulateMedia({ colorScheme: scheme });
+      await page.waitForTimeout(250);
+      for (const target of targets) {
+        const node = page.locator(target).first();
+        if (!(await node.count())) continue;
+        expect(await contrast(node), `${tab} ${target} in ${scheme}`).toBeGreaterThanOrEqual(4.5);
+      }
     }
   }
   await page.emulateMedia({ colorScheme: "light" });
+
+  /*
+   * The card faces are the one family of surfaces that is still deliberately dark,
+   * and they carry white ink in both themes — so they get the guard that suits
+   * them: every stop of every gradient stays dark enough for white to clear AA.
+   * A gradient has no computed backgroundColor, which is why the walker above
+   * cannot judge them and they are checked here instead.
+   */
+  const faces = await page.locator(".account-card").evaluateAll((cards) =>
+    cards.flatMap((card) => {
+      const image = getComputedStyle(card).backgroundImage;
+      return Array.from(image.matchAll(/rgba?\(([^)]+)\)/g)).map((match) => {
+        const [r, g, b, a = 1] = match[1].split(",").map(Number);
+        // Composite onto white: a translucent stop is only as dark as what shows.
+        const mix = (c: number) => c * a + 255 * (1 - a);
+        const f = (c: number) => { const v = mix(c) / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+        return { stop: match[0], ratio: 1.05 / (0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b) + 0.05) };
+      });
+    }),
+  );
+  expect(faces.length, "account cards should paint a gradient face").toBeGreaterThan(0);
+  for (const { stop, ratio } of faces) {
+    expect(ratio, `white ink on card stop ${stop}`).toBeGreaterThanOrEqual(4.5);
+  }
 });

@@ -73,7 +73,7 @@ test("monthly budgets can be created, edited, and removed", async ({ page, isMob
   await page.goto("/preview");
   await page.locator(isMobile ? ".mobile-nav button" : ".main-nav button").filter({ hasText: /^Money$/ }).click();
   await page.getByRole("tab", { name: "Budget" }).click();
-  await expect(page.getByRole("heading", { name: "Decide what feels comfortable, then adjust as life changes." })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Monthly budget" })).toBeVisible();
   await page.getByLabel("Category").selectOption("Food & dining");
   await page.getByLabel("Monthly limit").fill("500");
   await page.getByRole("button", { name: "Add category" }).click();

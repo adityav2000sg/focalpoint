@@ -644,6 +644,25 @@ export function formatDate(date: string, short = false) {
   }).format(new Date(`${date}T12:00:00`));
 }
 
+/* A ledger reads by recency, so the two days a user is actually looking for get
+   their names back and everything older falls back to a date. The year is only
+   shown once it is not the current one — repeating "2026" down a column of
+   headings tells the reader nothing they did not already know. */
+export function formatDayHeading(date: string, today = todayIso()) {
+  if (date === today) return "Today";
+  const previous = new Date(`${today}T12:00:00`);
+  previous.setDate(previous.getDate() - 1);
+  if (date === previous.toISOString().slice(0, 10)) return "Yesterday";
+  const parsed = new Date(`${date}T12:00:00`);
+  const sameYear = parsed.getFullYear() === new Date(`${today}T12:00:00`).getFullYear();
+  return new Intl.DateTimeFormat("en-SG", {
+    weekday: "short",
+    day: "numeric",
+    month: "short",
+    year: sameYear ? undefined : "numeric",
+  }).format(parsed);
+}
+
 export function monthKey(date: string | Date) {
   const parsed = typeof date === "string" ? new Date(`${date}T12:00:00`) : date;
   return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, "0")}`;

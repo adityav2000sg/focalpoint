@@ -2,9 +2,12 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
-  // The dev overlay badge sits over the bottom navigation, so it is hidden only while
-  // rendering App Store listing screenshots. Normal `next dev` keeps the indicator.
-  ...(process.env.STORE_SCREENSHOTS === "1" ? { devIndicators: false as const } : {}),
+  // The dev overlay badge sits in the bottom-left corner, which is exactly where the
+  // tab bar's first tab now is — it swallows taps on Today and blocks the e2e suite.
+  // It is hidden whenever a harness is driving the app; plain `next dev` keeps it.
+  ...(process.env.STORE_SCREENSHOTS === "1" || process.env.E2E_BYPASS_AUTH === "1"
+    ? { devIndicators: false as const }
+    : {}),
   poweredByHeader: false,
   turbopack: {
     root: process.cwd(),
