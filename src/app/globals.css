@@ -596,7 +596,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 .wizard-currency { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 7px; }
 .wizard-currency button { min-height: 46px; border: 1px solid var(--line); border-radius: 13px; color: var(--ink); background: var(--paper); font-size: var(--text-sm); font-weight: var(--weight-medium); cursor: pointer; }
-.wizard-currency .active { color: var(--accent-on); background: var(--accent-surface); border-color: var(--forest); }
+.wizard-currency .active { color: var(--accent-on); background: var(--accent-surface); border-color: var(--accent-surface); }
 
 .wizard-kinds { display: grid; grid-template-columns: repeat(auto-fit,minmax(150px,1fr)); gap: 8px; }
 .wizard-kinds button { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; padding: 13px; border: 1px solid var(--line); border-radius: 15px; color: inherit; background: var(--paper); text-align: left; cursor: pointer; }
@@ -653,9 +653,11 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .networth-panel { display: flex; flex-direction: column; gap: 12px; padding: 22px; border: 1px solid var(--line); border-radius: 22px; background: var(--paper); box-shadow: var(--elev-1); }
 .networth-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; margin: 0; }
 .networth-heading h2 { font-size: var(--text-xl); }
-.range-switch { display: flex; gap: 3px; padding: 3px; border-radius: 11px; background: var(--paper-sunken); }
-.range-switch button { min-height: 32px; padding: 0 11px; border: 0; border-radius: 8px; color: var(--muted); background: transparent; font-size: var(--text-xs); font-weight: var(--weight-strong); cursor: pointer; }
-.range-switch .active { color: var(--accent-on); background: var(--accent-surface); }
+/* The last segmented control still painting its selection as a filled black
+   pill, which made a chart range look like the page's primary action. */
+.range-switch { display: flex; gap: 2px; padding: 2px; border-radius: var(--r-sm); background: var(--paper-sunken); }
+.range-switch button { min-height: 30px; padding: 0 12px; border: 0; border-radius: 8px; color: var(--ink-soft); background: transparent; font-size: var(--text-sm); font-weight: var(--weight-medium); letter-spacing: var(--track-tight); cursor: pointer; transition: color var(--motion-control) var(--motion-ease-out), background var(--motion-control) var(--motion-ease-out); }
+.range-switch .active { color: var(--ink); background: var(--paper); box-shadow: var(--elev-2); }
 .networth-change { margin: 0; color: var(--forest); font-size: var(--text-sm); font-weight: var(--weight-medium); }
 .networth-change.is-down { color: var(--amber); }
 .networth-change span { color: var(--muted); font-weight: var(--weight-regular); }
@@ -834,7 +836,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .import-copy { display: flex; align-items: flex-start; gap: 13px; margin-bottom: 15px; }.import-icon { width: 43px; height: 43px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 13px; color: var(--green-600); background: var(--green-50); }.import-copy strong { display: block; font-size: var(--text-sm); }.import-copy p { margin: 5px 0 0; color: var(--muted); font-size: var(--text-2xs); line-height: 1.5; }.import-textarea { width: 100%; min-height: 185px; resize: vertical; margin-bottom: 14px; padding: 14px; border: 1px solid var(--line); border-radius: 13px; color: var(--forest); background: var(--paper); font-family: monospace; font-size: var(--text-2xs); line-height: 1.6; outline: 0; }
 .toast { position: fixed; z-index: 120; pointer-events: none; left: 50%; bottom: 28px; display: flex; align-items: center; gap: 8px; padding: 11px 16px; border: 0; border-radius: var(--r-pill); color: var(--accent-on); background: var(--accent-surface); box-shadow: var(--elev-3); font-size: var(--text-sm); transform: translateX(-50%); animation: toast-in var(--motion-modal) var(--motion-ease-out); }
 .toast svg { color: var(--green-400); }
-.mobile-nav, .mobile-fab { display: none; }
+.mobile-nav { display: none; }
 
 /* Product systems: Money, Future, Coach, Household and voice capture */
 .sync-pill { height: 34px; display: inline-flex; align-items: center; gap: 6px; padding: 0 10px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); background: var(--paper); font-size: var(--text-xs); font-weight: var(--weight-strong); }
@@ -995,7 +997,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 @media (max-width: 640px) {
   button, [role="button"] { touch-action: manipulation; }
   .topbar { height: calc(66px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) 16px 0; }
-  .top-actions .icon-button, .compact-button { display: none; }
+  .top-actions .icon-button:not(.capture-bar-button), .compact-button { display: none; }
   .top-actions .sync-pill { display: none; }
   .scope-switcher { margin-left: auto; margin-right: auto; }
   .scope-option { min-height: 42px; padding: 8px 12px; }
@@ -1056,7 +1058,6 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .mobile-nav button { min-width: 0; min-height: 50px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; padding: 2px; border: 0; border-radius: 0; color: var(--muted); background: transparent; font-size: var(--text-2xs); font-weight: var(--weight-medium); letter-spacing: 0; cursor: pointer; transition: color var(--motion-control) var(--motion-ease-out); }
   .mobile-nav button:active { transform: none; }
   .mobile-nav-active { color: var(--ink)!important; background: transparent!important; }
-  .mobile-fab { position: fixed; z-index: 45; right: 16px; bottom: calc(66px + env(safe-area-inset-bottom)); width: 52px; height: 52px; display: grid; place-items: center; border: 0; border-radius: 50%; color: var(--accent-on); background: var(--accent-surface); box-shadow: var(--elev-3); cursor: pointer; }
   .auth-page { min-height: 100svh; padding: 14px; }.auth-card { padding: 28px 22px; border-radius: var(--r-xl); }.auth-brand { margin-bottom: 28px; }.auth-card h1 { font-size: clamp(26px,7vw,34px); line-height: 1.1; }.auth-copy { font-size: var(--text-base); }.auth-promises span { font-size: var(--text-sm); }.google-button { min-height: 56px; }
   .first-run-guide { padding: 19px; border-radius: 21px; }.first-run-heading { align-items: flex-start; flex-direction: column; gap: 10px; }.first-run-heading h2 { font-size: var(--text-xl); }.first-run-steps > button { min-height: 158px; }.first-run-steps > button > p { font-size: var(--text-sm); }
   .toast { bottom: calc(66px + env(safe-area-inset-bottom)); width: calc(100% - 36px); justify-content: center; }
@@ -1354,3 +1355,14 @@ button:disabled { cursor: not-allowed; opacity: .48; }
   .section-tabs .section-tab > svg { display: none; }
 }
 .section-tab > svg { flex: 0 0 auto; }
+
+/* Capture lives in the sticky bar on a phone, not in a circle floating over the
+   ledger. The bar is always there, it never covers an amount, and neither of the
+   apps this is measured against has ever had a floating action button. */
+.capture-bar-button { display: none; }
+@media (max-width: 640px) {
+  .capture-bar-button { display: grid; }
+  /* The bar now holds the action, so the content only clears the tab bar. */
+  .content { padding-bottom: calc(96px + env(safe-area-inset-bottom)); }
+  .toast { bottom: calc(66px + env(safe-area-inset-bottom)); }
+}

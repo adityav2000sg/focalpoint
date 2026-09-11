@@ -1128,6 +1128,9 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
               <span>{syncStatus === "saved" ? "Saved" : syncStatus === "saving" ? "Saving" : syncStatus === "offline" ? "On device" : "Loading"}</span>
             </span>
             <button className="primary-button compact-button capture-button" onClick={() => setModal("capture")}><Mic size={18} /> Capture</button>
+            {/* On a phone the bar is where the always-available action lives. It
+                replaces the floating button that used to sit over the ledger. */}
+            <button className="icon-button capture-bar-button" onClick={() => setModal("capture")} aria-label="Capture with voice or text"><Mic size={20} /></button>
           </div>
         </header>
 
@@ -1273,7 +1276,7 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
         })}
       </nav>
 
-      <button className="mobile-fab voice-fab" onClick={() => setModal("capture")} aria-label="Capture with voice or text"><Mic size={24} /></button>
+
 
       {modal === "capture" && <CaptureModal accounts={data.accounts} profile={data.profile} scope={scope} qwenConfigured={qwenConfigured} onClose={() => setModal(null)} onTransaction={(draft) => openCaptureDraft(draft)} onPlan={(event) => savePlannedEvent(event)} onAsk={(prompt) => { setModal(null); setActiveView("coach"); window.setTimeout(() => window.dispatchEvent(new CustomEvent("lifetime-coach-question", { detail: prompt })), 100); }} onProfile={(profile) => setData((current) => ({ ...current, profile }))} />}
       {modal === "transaction" && <TransactionModal initial={editingTransaction || captureDraft} accounts={data.accounts} scope={scope} fx={fx} categories={categories} onNeedAccount={() => openRequiredAccount("transaction")} onClose={() => { setModal(null); setEditingTransaction(null); setEditingInbox(null); setCaptureDraft(null); }} onSubmit={saveTransaction} onDelete={editingTransaction ? () => deleteTransaction(editingTransaction) : undefined} />}
