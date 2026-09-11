@@ -1086,8 +1086,12 @@ export default function LifetimeFinanceHub({ viewer, signOutPath, apiBaseUrl = "
 
       <div className="app-main">
         <header className="topbar">
-          <button className="icon-button mobile-menu-button" onClick={() => setMobileMenu((open) => !open)} aria-label="Open navigation">
-            <Menu size={21} />
+          {/* Top-left is the account, not a hamburger. The drawer behind it is the
+              profile and its settings — the four destinations it also lists are
+              already in the tab bar, so a menu glyph promised navigation the
+              drawer did not add. */}
+          <button className="mobile-menu-button" onClick={() => setMobileMenu((open) => !open)} aria-label="Open navigation">
+            <span className="avatar">{data.profile.name.split(/\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "?"}</span>
           </button>
 
           {/* One segment is not a switch. Until Together exists there is nothing to
@@ -1808,7 +1812,10 @@ function InboxView({ inbox, accounts, onImport, onApprove, onDismiss, onEdit }: 
   return (
     <div className="page-stack">
       <section className="panel inbox-panel">
-        <div className="inbox-intro"><span className="inbox-source"><ShieldCheck size={20} /></span><div><strong>{inbox.length ? `${inbox.length} imported item${inbox.length === 1 ? "" : "s"} to check` : "No imports waiting"}</strong><p>Imports can contain the wrong date, category, or account. Nothing here becomes real activity until you choose Add to activity. Removing an item never changes your finances.</p></div></div>
+        {/* The explainer only earns its place when there is something to explain.
+            With an empty inbox it stacked a heading and a paragraph directly above
+            the empty state's own heading and paragraph, both saying the same thing. */}
+        {inbox.length > 0 && <div className="inbox-intro"><span className="inbox-source"><ShieldCheck size={20} /></span><div><strong>{`${inbox.length} imported item${inbox.length === 1 ? "" : "s"} to check`}</strong><p>Imports can contain the wrong date, category, or account. Nothing here becomes real activity until you choose Add to activity. Removing an item never changes your finances.</p></div></div>}
         <div className="inbox-list">
           {inbox.map((item) => {
             const account = accounts.find((candidate) => candidate.id === item.suggestedAccountId);

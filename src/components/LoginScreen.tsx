@@ -41,16 +41,20 @@ export default function LoginScreen({ configured, appleEnabled, error, next = "/
         </div>
         {configured ? (
           <div className="auth-buttons">
-          <button className="google-button" onClick={() => signIn("google")} disabled={working}>
+          {/* Apple leads when it is available. Guideline 4.8 asks that Sign in with
+              Apple be presented no less prominently than the other options, and
+              Apple's own button is the filled one — so it takes that treatment and
+              Google becomes the outlined alternative. */}
+          {appleEnabled && <button className="apple-button" onClick={() => signIn("apple")} disabled={working}>
+            <Apple size={19} />
+            {working ? "Opening Apple…" : "Continue with Apple"}
+            <ArrowRight size={18} />
+          </button>}
+          <button className={appleEnabled ? "google-button" : "google-button google-button-lead"} onClick={() => signIn("google")} disabled={working}>
             <span className="google-mark">G</span>
             {working ? "Opening Google…" : "Continue with Google"}
             <ArrowRight size={18} />
           </button>
-          {appleEnabled && <button className="apple-button" onClick={() => signIn("apple")} disabled={working}>
-            <Apple size={19} />
-            Continue with Apple
-            <ArrowRight size={18} />
-          </button>}
           </div>
         ) : (
           <div className="setup-message"><strong>Setup needed</strong><span>Add the Supabase variables in Netlify before opening the app.</span></div>
